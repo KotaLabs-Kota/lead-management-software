@@ -30,6 +30,7 @@ coverage/
 /tmp/
 pgdata/
 .test-pgdata/
+.dev-pgdata/
 *.sqlite
 
 # editors / OS
