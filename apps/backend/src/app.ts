@@ -4,7 +4,7 @@ import cors from 'cors';
 import express, { type Express, type Request, type Response } from 'express';
 import helmet from 'helmet';
 import pinoHttp from 'pino-http';
-import { corsOrigins, trustProxy } from './config/env';
+import { corsOrigins, env, trustProxy } from './config/env';
 import { logger } from './lib/logger';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { apiRateLimiter } from './middleware/rateLimit';
@@ -67,11 +67,11 @@ export function createApp(): Express {
   // Routes
   // ---------------------------------------------------------------------------
   app.get('/healthz', (_req: Request, res: Response) => {
-    res.status(200).json({ status: 'ok', service: 'kotalabs-crm-backend' });
+    res.status(200).json({ status: 'ok', service: 'kotalabs-crm-backend', ...(env.HEALTH_ENVIRONMENT_LABEL ? { environment: env.HEALTH_ENVIRONMENT_LABEL } : {}) });
   });
 
   app.get('/api/health', (_req: Request, res: Response) => {
-    res.status(200).json({ status: 'ok', service: 'kotalabs-crm-backend' });
+    res.status(200).json({ status: 'ok', service: 'kotalabs-crm-backend', ...(env.HEALTH_ENVIRONMENT_LABEL ? { environment: env.HEALTH_ENVIRONMENT_LABEL } : {}) });
   });
 
   app.use('/api/auth', authRouter);

@@ -55,6 +55,20 @@ describe('health', () => {
     expect(res.body.status).toBe('ok');
   });
 
+  it('exposes an optional non-secret environment label on both health endpoints', async () => {
+    env.HEALTH_ENVIRONMENT_LABEL = 'crm-call-test';
+    try {
+      for (const path of ['/healthz', '/api/health']) {
+        const res = await request(app).get(path).expect(200);
+        expect(res.body.environment).toBe('crm-call-test');
+      }
+    } finally {
+      env.HEALTH_ENVIRONMENT_LABEL = undefined;
+    }
+    const unlabelled = await request(app).get('/api/health').expect(200);
+    expect(unlabelled.body.environment).toBeUndefined();
+  });
+
   it('unknown route returns 404 JSON', async () => {
     const res = await request(app).get('/api/does-not-exist').expect(404);
     expect(res.body.error.code).toBe('NOT_FOUND');
