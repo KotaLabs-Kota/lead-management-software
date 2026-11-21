@@ -43,7 +43,8 @@ jobs:
           status=$?
           tail -120 gradle-build.log
           if [ "$status" -ne 0 ]; then
-            tail -80 gradle-build.log | while IFS= read -r line; do echo "::error::$line"; done
+            details=$(grep -E '(^e: |[Ee]rror|FAILURE|What went wrong|^> |[.]kt:)' gradle-build.log | tail -25 | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error::$details"
           fi
           exit "$status"
       - name: Upload test APK
