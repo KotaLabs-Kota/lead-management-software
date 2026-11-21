@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createApp } from '../src/app';
 import { closePool } from '../src/db/pool';
+import { env } from '../src/config/env';
 import { seedUsers, startTestDatabase, stopTestDatabase } from './setup';
 
 const app = createApp();
@@ -393,6 +394,114 @@ describe('call events', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .expect(200);
     expect(unmatched.body.callEvents.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('opt-in device call creates one lead, retries safely and marks returning contacts', async () => {
+    env.CALL_EVENT_AUTO_CREATE_LEAD = true;
+    try {
+      const phone = '+919876000123';
+      const event = { eventId: randomUUID(), phoneNumber: phone, direction: 'MISSED',
+        startedAt: '2026-11-21T14:00:00+05:30', source: 'SIM', captureMethod: 'CALL_LOG' };
+      const [first, retry] = await Promise.all([
+        request(app).post('/api/v1/call-events').set('Authorization', `Bearer ${deviceToken}`).send(event),
+        request(app).post('/api/v1/call-events').set('Authorization', `Bearer ${deviceToken}`).send(event),
+      ]);
+      expect([first.body.summary.created, retry.body.summary.created].sort()).toEqual([0, 1]);
+      expect([first.body.summary.duplicates, retry.body.summary.duplicates].sort()).toEqual([0, 1]);
+      const newLeadId = first.body.results[0].callEvent.leadId as string;
+      expect(newLeadId).toBeTruthy();
+      expect(retry.body.results[0].callEvent.leadId).toBe(newLeadId);
+
+      const more = await Promise.all([1, 2].map(() => request(app).post('/api/v1/call-events')
+        .set('Authorization', `Bearer ${deviceToken}`).send({ ...event, eventId: randomUUID() })));
+      expect(more.every((res) => res.body.results[0].callEvent.leadId === newLeadId)).toBe(true);
+      const activity = await request(app).get(`/api/v1/leads/${newLeadId}/activities`)
+        .set('Authorization', `Bearer ${employeeToken}`).expect(200);
+      expect(activity.body.activities.filter((a: {type: string}) => a.type === 'CALL')).toHaveLength(3);
+      expect(activity.body.activities.find((a: {type: string}) => a.type === 'CALL').metadata.direction).toBe('MISSED');
+
+      await request(app).patch(`/api/v1/leads/${newLeadId}`)
+        .set('Authorization', `Bearer ${adminToken}`).send({ status: 'CONVERTED' }).expect(200);
+      const returning = await request(app).post('/api/v1/call-events')
+        .set('Authorization', `Bearer ${deviceToken}`).send({ ...event, eventId: randomUUID() }).expect(201);
+      const returningId = returning.body.results[0].callEvent.leadId;
+      expect(returningId).not.toBe(newLeadId);
+      const detail = await request(app).get(`/api/v1/leads/${returningId}`)
+        .set('Authorization', `Bearer ${employeeToken}`).expect(200);
+      expect(detail.body.lead.sourceDetail).toBe('Returning contact');
+      expect(detail.body.lead.assignedUserId).toBe(employeeId);
+      expect(detail.body.previousLeads.map((lead: {id: string}) => lead.id)).toContain(newLeadId);
+      const restricted = await request(app).get(`/api/v1/leads/${returningId}`)
+        .set('Authorization', `Bearer ${employee2Token}`).expect(404);
+      expect(restricted.body.error).toBeDefined();
+    } finally {
+      env.CALL_EVENT_AUTO_CREATE_LEAD = false;
+    }
+  });
+
+  it('opt-in does not auto-create leads for manual or outgoing calls', async () => {
+    env.CALL_EVENT_AUTO_CREATE_LEAD = true;
+    try {
+      for (const [token, direction, source] of [
+        [employeeToken, 'MISSED', 'SIM'], [deviceToken, 'OUTGOING', 'SIM'],
+        [deviceToken, 'MISSED', 'WHATSAPP'],
+      ]) {
+        const res = await request(app).post('/api/v1/call-events')
+          .set('Authorization', `Bearer ${token}`)
+          .send({ eventId: randomUUID(), phoneNumber: '+919876000124', direction, source,
+            startedAt: '2026-11-21T14:00:00+05:30' }).expect(201);
+        expect(res.body.results[0].callEvent.leadId).toBeNull();
+      }
+    } finally {
+      env.CALL_EVENT_AUTO_CREATE_LEAD = false;
+    }
+  });
+
+  it('serializes concurrent manual creation and phone sync for the same number', async () => {
+    env.CALL_EVENT_AUTO_CREATE_LEAD = true;
+    try {
+      const phone = '+919876000126';
+      const [manual, call] = await Promise.all([
+        request(app).post('/api/v1/leads').set('Authorization', `Bearer ${employeeToken}`)
+          .send({ customerName: 'Manual lead', phone, source: 'MANUAL' }),
+        request(app).post('/api/v1/call-events').set('Authorization', `Bearer ${deviceToken}`)
+          .send({ eventId: randomUUID(), phoneNumber: phone, direction: 'MISSED', source: 'SIM',
+            startedAt: '2026-11-21T14:00:00+05:30' }),
+      ]);
+      expect([201, 409]).toContain(manual.status);
+      expect(call.body.summary.created).toBe(1);
+      const leads = await request(app).get(`/api/v1/leads?search=${encodeURIComponent(phone)}`)
+        .set('Authorization', `Bearer ${adminToken}`).expect(200);
+      expect(leads.body.leads).toHaveLength(1);
+      expect(call.body.results[0].callEvent.leadId).toBe(leads.body.leads[0].id);
+    } finally {
+      env.CALL_EVENT_AUTO_CREATE_LEAD = false;
+    }
+  });
+
+  it('does not expose previous leads assigned to another employee', async () => {
+    const auth = `Bearer ${adminToken}`;
+    const old = await request(app).post('/api/v1/leads').set('Authorization', auth)
+      .send({ customerName: 'Private old lead', phone: '+919876000125', source: 'MANUAL', assignedUserId: employee2Id }).expect(201);
+    await request(app).patch(`/api/v1/leads/${old.body.lead.id}`).set('Authorization', auth)
+      .send({ status: 'CONVERTED' }).expect(200);
+    const current = await request(app).post('/api/v1/leads').set('Authorization', auth)
+      .send({ customerName: 'Current lead', phone: '+919876000125', source: 'MANUAL', assignedUserId: employeeId }).expect(201);
+    const employeeView = await request(app).get(`/api/v1/leads/${current.body.lead.id}`)
+      .set('Authorization', `Bearer ${employeeToken}`).expect(200);
+    expect(employeeView.body.previousLeads).toHaveLength(0);
+    const adminView = await request(app).get(`/api/v1/leads/${current.body.lead.id}`)
+      .set('Authorization', auth).expect(200);
+    expect(adminView.body.previousLeads.map((lead: {id: string}) => lead.id)).toContain(old.body.lead.id);
+  });
+
+  it('device cannot spoof another device or choose a lead', async () => {
+    const res = await request(app).post('/api/v1/call-events')
+      .set('Authorization', `Bearer ${deviceToken}`)
+      .send({ eventId: randomUUID(), phoneNumber: '+919876543210', direction: 'MISSED', source: 'SIM',
+        leadId, deviceId: randomUUID(), startedAt: '2026-11-21T14:00:00+05:30' }).expect(201);
+    expect(res.body.summary.failed).toBe(1);
+    expect(res.body.summary.created).toBe(0);
   });
 
   it('revoked device token is rejected', async () => {

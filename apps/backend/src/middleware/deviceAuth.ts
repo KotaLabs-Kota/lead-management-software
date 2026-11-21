@@ -66,7 +66,8 @@ export async function authenticateDevice(
 
     // Best-effort "last seen" tracking — never block the request on it.
     void maybeOne(
-      `UPDATE devices SET last_seen_at = now() WHERE id = $1`,
+      `UPDATE devices SET last_seen_at = now()
+       WHERE id = $1 AND (last_seen_at IS NULL OR last_seen_at < now() - interval '5 minutes')`,
       [device.id],
     ).catch(() => undefined);
 

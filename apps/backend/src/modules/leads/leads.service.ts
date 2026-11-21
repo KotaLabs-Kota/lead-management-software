@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express';
-import { many, maybeOne, one, withTransaction } from '../../db/pool';
+import { many, maybeOne, one, withTransaction, type Queryable } from '../../db/pool';
 import { logger } from '../../lib/logger';
 import { formatLeadNumber, OPEN_LEAD_STATUSES } from '../../types/domain';
 import { AppError, conflict, notFound, validationError } from '../../utils/errors';
@@ -115,7 +115,7 @@ async function assertUserExists(userId: string | null | undefined): Promise<void
  * Duplicate guard: an open lead for the same phone number already exists.
  * Closed leads (CONVERTED/LOST) do not block a new enquiry from the same person.
  */
-async function assertNoOpenDuplicate(phone: string, excludeLeadId?: string): Promise<void> {
+async function assertNoOpenDuplicate(phone: string, excludeLeadId?: string, db?: Queryable): Promise<void> {
   const params: unknown[] = [phone, OPEN_LEAD_STATUSES];
   let excludeClause = '';
   if (excludeLeadId) {
@@ -128,6 +128,7 @@ async function assertNoOpenDuplicate(phone: string, excludeLeadId?: string): Pro
       WHERE phone = $1 AND status = ANY($2) ${excludeClause}
       ORDER BY created_at DESC LIMIT 1`,
     params,
+    db,
   );
 
   if (duplicate) {
@@ -201,7 +202,25 @@ export async function getLead(req: Request, res: Response): Promise<void> {
 
   const lead = await maybeOne<LeadRow>(`${SELECT_LEAD} WHERE l.id = $1 ${scopeClause}`, params);
   if (!lead) throw notFound('Lead');
-  res.status(200).json({ lead: publicLead(lead) });
+  // Respect the same employee access rules for every historical record. Never
+  // reveal another employee's assigned leads through the returning-contact view.
+  const historyParams: unknown[] = [lead.phone, lead.created_at, id];
+  const historyScope = req.auth!.role === 'ADMIN'
+    ? ''
+    : `AND (l.assigned_user_id = $4 OR l.assigned_user_id IS NULL)`;
+  if (req.auth!.role !== 'ADMIN') historyParams.push(req.auth!.userId);
+  const previousLeads = await many<{ id: string; lead_number: number; status: string; customer_name: string; created_at: Date }>(
+    `SELECT l.id, l.lead_number, l.status, l.customer_name, l.created_at
+       FROM leads l WHERE l.phone = $1 AND l.created_at < $2 AND l.id <> $3 ${historyScope}
+       ORDER BY l.created_at DESC LIMIT 25`, historyParams,
+  );
+  res.status(200).json({
+    lead: publicLead(lead),
+    previousLeads: previousLeads.map((prior) => ({
+      id: prior.id, leadCode: formatLeadNumber(prior.lead_number), status: prior.status,
+      customerName: prior.customer_name, createdAt: prior.created_at,
+    })),
+  });
 }
 
 /** POST /api/v1/leads */
@@ -219,9 +238,11 @@ export async function createLead(req: Request, res: Response): Promise<void> {
 
   const assignedUserId = input.assignedUserId ?? null;
   await assertUserExists(assignedUserId);
-  await assertNoOpenDuplicate(phone);
 
   const lead = await withTransaction(async (client) => {
+    // Coordinate manual creation with concurrent device-call lead creation.
+    await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`phone:${phone}`]);
+    await assertNoOpenDuplicate(phone, undefined, client);
     const inserted = await one<LeadRow>(
       `INSERT INTO leads (
          customer_name, phone, alternate_phone, email, city, vehicle_type, vehicle_details,

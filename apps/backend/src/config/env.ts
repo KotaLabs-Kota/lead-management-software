@@ -35,6 +35,10 @@ const envSchema = z.object({
   AUTH_RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().default(20),
 
   DEFAULT_COUNTRY_CODE: z.string().length(2).default('IN'),
+  CALL_EVENT_AUTO_CREATE_LEAD: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
   CALL_EVENT_AUTO_LINK_LEAD: z
     .enum(['true', 'false'])
     .default('true')

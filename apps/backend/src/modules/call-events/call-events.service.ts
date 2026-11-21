@@ -79,7 +79,8 @@ interface IngestResult {
  *
  * Lead linking: an explicit `leadId` always wins. Otherwise, when
  * CALL_EVENT_AUTO_LINK_LEAD is enabled, the most recent open lead for the same
- * phone number is linked. A call NEVER creates a lead by itself.
+ * phone number is linked. If explicitly enabled, device-originated incoming
+ * and missed SIM calls also create a lead when no open lead exists.
  */
 async function ingestEvent(
   input: SingleCallEventInput,
@@ -90,35 +91,71 @@ async function ingestEvent(
     throw validationError(`phoneNumber "${input.phoneNumber}" is not a valid phone number`);
   }
 
-  const existing = await maybeOne<CallEventRow>(
-    `${SELECT_CALL_EVENT} WHERE ce.event_id = $1`,
-    [input.eventId],
-  );
-  if (existing) {
-    return { eventId: input.eventId, status: 'duplicate', callEvent: publicCallEvent(existing) };
+  if (actor.deviceId && ((input.deviceId && input.deviceId !== actor.deviceId) || input.leadId)) {
+    throw validationError('Device calls cannot specify a different device or an explicit lead');
   }
 
-  let leadId: string | null = input.leadId ?? null;
-
-  if (!leadId && env.CALL_EVENT_AUTO_LINK_LEAD) {
-    const openLead = await maybeOne<{ id: string }>(
-      `SELECT id FROM leads
-        WHERE phone = $1 AND status NOT IN ('CONVERTED', 'LOST')
-        ORDER BY created_at DESC
-        LIMIT 1`,
-      [phoneNumber],
+  return withTransaction(async (client) => {
+    // Lock event then phone consistently. Retries and simultaneous phone syncs
+    // cannot create another call/lead before the first transaction commits.
+    await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`event:${input.eventId}`]);
+    const existing = await maybeOne<CallEventRow>(
+      `${SELECT_CALL_EVENT} WHERE ce.event_id = $1`, [input.eventId], client,
     );
-    leadId = openLead?.id ?? null;
-  }
+    if (existing) {
+      if (existing.user_id !== actor.userId || (actor.deviceId && existing.device_id !== actor.deviceId)) {
+        throw validationError('eventId belongs to a different actor');
+      }
+      return { eventId: input.eventId, status: 'duplicate', callEvent: publicCallEvent(existing) };
+    }
 
-  if (leadId) {
-    const lead = await maybeOne<{ id: string }>(`SELECT id FROM leads WHERE id = $1`, [leadId]);
-    if (!lead) throw validationError(`leadId ${leadId} does not reference an existing lead`);
-  }
+    await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`phone:${phoneNumber}`]);
+    let leadId: string | null = input.leadId ?? null;
+    if (!leadId && env.CALL_EVENT_AUTO_LINK_LEAD) {
+      const openLead = await maybeOne<{ id: string }>(
+        `SELECT id FROM leads WHERE phone = $1 AND status NOT IN ('CONVERTED', 'LOST')
+         ORDER BY created_at DESC LIMIT 1`, [phoneNumber], client,
+      );
+      leadId = openLead?.id ?? null;
+    }
 
-  const deviceId = input.deviceId ?? actor.deviceId;
+    const eligible = Boolean(actor.deviceId) && input.source === 'SIM' &&
+      (input.direction === 'INCOMING' || input.direction === 'MISSED');
+    if (!leadId && eligible && env.CALL_EVENT_AUTO_CREATE_LEAD) {
+      // Always check for open leads when auto-create is enabled, even if the
+      // independent auto-link toggle was turned off.
+      const existingOpen = await maybeOne<{ id: string }>(
+        `SELECT id FROM leads WHERE phone = $1 AND status NOT IN ('CONVERTED', 'LOST')
+         ORDER BY created_at DESC LIMIT 1`, [phoneNumber], client,
+      );
+      if (existingOpen) {
+        leadId = existingOpen.id;
+      } else {
+        const previous = await maybeOne<{ id: string }>(
+          `SELECT id FROM leads WHERE phone = $1 AND status IN ('CONVERTED', 'LOST')
+            AND (assigned_user_id = $2 OR assigned_user_id IS NULL OR
+                 EXISTS (SELECT 1 FROM users WHERE id = $2 AND role = 'ADMIN')) LIMIT 1`,
+          [phoneNumber, actor.userId], client,
+        );
+        const lead = await one<{ id: string }>(
+          `INSERT INTO leads (customer_name, phone, source, source_detail, assigned_user_id, created_by)
+           VALUES ('Unknown caller', $1, 'PHONE_CALL', $2, $3, $3) RETURNING id`,
+          [phoneNumber, previous ? 'Returning contact' : null, actor.userId], client,
+        );
+        leadId = lead.id;
+        await client.query(
+          `INSERT INTO lead_activities (lead_id, user_id, type, body, metadata)
+           VALUES ($1, $2, 'CREATED', $3, $4)`,
+          [leadId, actor.userId, 'Lead created from incoming call', JSON.stringify({ returningContact: Boolean(previous) })],
+        );
+      }
+    }
 
-  const created = await withTransaction(async (client) => {
+    if (leadId) {
+      const lead = await maybeOne<{ id: string }>(`SELECT id FROM leads WHERE id = $1`, [leadId], client);
+      if (!lead) throw validationError(`leadId ${leadId} does not reference an existing lead`);
+    }
+    const deviceId = actor.deviceId ?? input.deviceId ?? null;
     const row = await one<CallEventRow>(
       `INSERT INTO call_events (
          event_id, lead_id, device_id, user_id, phone_number, direction, source,
@@ -169,10 +206,8 @@ async function ingestEvent(
       );
     }
 
-    return row;
+    return { eventId: input.eventId, status: 'created', callEvent: publicCallEvent(row) };
   });
-
-  return { eventId: input.eventId, status: 'created', callEvent: publicCallEvent(created) };
 }
 
 /**

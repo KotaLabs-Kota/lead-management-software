@@ -86,8 +86,9 @@ with offset), `durationSeconds`, `simSlot` (1|2), `notes`, `leadId?`,
 
 Rules:
 - Duplicate `eventId` → returns the existing row, never a second row.
-- A call **never** creates a lead. With `CALL_EVENT_AUTO_LINK_LEAD=true` it
-  links to the most recent open lead with the same phone number.
+- With `CALL_EVENT_AUTO_LINK_LEAD=true`, calls link to the most recent open lead with the same phone number.
+- `CALL_EVENT_AUTO_CREATE_LEAD` defaults to `false`. When explicitly enabled, authenticated device-originated incoming and missed SIM calls create an assigned lead if no open lead matches. Previous visible closed leads produce a “Returning contact” source detail. Manual, WhatsApp, and outgoing calls never auto-create leads. Do not enable until Android sync and real-device testing are complete.
+- Lead details include up to 25 earlier matching leads visible to the requesting user (`previousLeads`).
 - Unavailable fields stay `null` — the server never invents call data.
 
 ### Follow-ups — `/api/v1/followups`

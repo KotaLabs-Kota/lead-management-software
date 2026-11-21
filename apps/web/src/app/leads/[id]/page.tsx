@@ -33,7 +33,7 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
 
   const leadQuery = useQuery({
     queryKey: ['lead', id],
-    queryFn: () => apiGet<{ lead: Lead }>(`/api/v1/leads/${id}`),
+    queryFn: () => apiGet<{ lead: Lead; previousLeads?: Array<{ id: string; leadCode: string; customerName: string; status: LeadStatus; createdAt: string }> }>(`/api/v1/leads/${id}`),
   });
   const activitiesQuery = useQuery({
     queryKey: ['lead-activities', id],
@@ -168,6 +168,23 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
               ) : null}
             </dl>
           </Card>
+
+          {leadQuery.data?.previousLeads?.length ? (
+            <Card title="Returning contact · previous leads">
+              <p className="mb-3 text-sm text-slate-500">Earlier leads with this phone number that you can access.</p>
+              <ul className="space-y-2 text-sm">
+                {leadQuery.data.previousLeads.map((previous) => (
+                  <li key={previous.id} className="flex flex-wrap items-center gap-2">
+                    <Link href={`/leads/${previous.id}`} className="font-medium text-indigo-600 hover:underline">
+                      {previous.leadCode} · {previous.customerName}
+                    </Link>
+                    <StatusBadge status={previous.status} />
+                    <span className="text-slate-500">{formatDateTime(previous.createdAt)}</span>
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          ) : null}
 
           <Card
             title="Activity timeline"
