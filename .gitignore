@@ -1,0 +1,43 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# builds
+dist/
+build/
+out/
+.turbo/
+.next/
+
+# environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# testing / local databases
+coverage/
+.tmp/
+/tmp/
+pgdata/
+.test-pgdata/
+*.sqlite
+
+# editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# misc
+*.tsbuildinfo
+.cache/

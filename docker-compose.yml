@@ -1,0 +1,60 @@
+# ---------------------------------------------------------------------------
+# KotaLabs CRM — local development stack
+# Usage:  docker compose up --build
+# Then:   docker compose exec backend npm run db:migrate
+#         docker compose exec backend npm run db:seed
+# ---------------------------------------------------------------------------
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: kotalabs-crm-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kotalabs_crm
+      POSTGRES_USER: crm
+      POSTGRES_PASSWORD: crm_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crm -d kotalabs_crm"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile
+    container_name: kotalabs-crm-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      PORT: 4000
+      LOG_LEVEL: debug
+      DATABASE_URL: postgres://crm:crm_dev_password@postgres:5432/kotalabs_crm
+      JWT_ACCESS_SECRET: dev_only_secret_change_me_32_chars_minimum
+      JWT_ACCESS_TTL_MINUTES: 60
+      REFRESH_TOKEN_TTL_DAYS: 30
+      CORS_ORIGINS: http://localhost:3000
+      DEFAULT_COUNTRY_CODE: IN
+      CALL_EVENT_AUTO_LINK_LEAD: "true"
+      SEED_ADMIN_EMAIL: admin@kotalabs.local
+      SEED_ADMIN_PASSWORD: Admin@12345
+      SEED_EMPLOYEE_PASSWORD: Employee@12345
+    ports:
+      - "4000:4000"
+    volumes:
+      # Mount source for live reload in development (tsx watch).
+      - ./apps/backend/src:/app/src
+      - ./apps/backend/scripts:/app/scripts
+      - ./apps/backend/migrations:/app/migrations
+    command: ["npx", "tsx", "watch", "src/server.ts"]
+
+volumes:
+  postgres_data:
