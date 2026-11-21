@@ -4,6 +4,8 @@
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
     <!-- Used only to check whether Android identifies a call account as a SIM. -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <!-- Android 12+ requires this for TelecomManager.getPhoneAccount. -->
+    <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
     <application
         android:allowBackup="false"
         android:label="CRM Call Test"

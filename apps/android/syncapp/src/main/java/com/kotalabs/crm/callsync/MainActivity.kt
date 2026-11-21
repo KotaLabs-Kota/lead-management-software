@@ -54,7 +54,7 @@ class MainActivity : Activity() {
         }
         if (enrollment == null) {
             root.addView(text("With your consent, this app reads your phone's call history after enrollment and sends identifiable incoming and missed SIM call numbers, times, and available durations to your company CRM. No audio is recorded. Calls may be missed if Android, your carrier or phone does not record or identify them. Your company administrator can revoke this device. Local queued calls remain until sent or deleted."))
-            root.addView(text("Only use with your company's permission and a test account. This test build connects to ${BuildConfig.CRM_SYNC_ORIGIN}."))
+            root.addView(text("On Android 12 or newer, Phone number permission is needed to inspect the call account; the app does not read your own phone number. Only use with your company's permission and a test account. This test build connects to ${BuildConfig.CRM_SYNC_ORIGIN}."))
             consent = CheckBox(this).apply { text = "I consent to this call-log access and CRM sync" }
             root.addView(consent)
             email = EditText(this).apply { hint = "CRM email"; inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS; isSingleLine = true }
@@ -71,10 +71,10 @@ class MainActivity : Activity() {
             root.addView(text("Device registered. ID: ${enrollment.deviceId}\nPending calls: ${if (count >= 0) count.toString() else "unavailable"}"))
             root.addView(text(SyncEngine.getStatus(this)))
             root.addView(text("Android may delay background work. A local check is requested after call-log changes and roughly every five minutes. No request is sent when there are no queued calls. Private numbers and calls without an identifiable SIM account are skipped."))
-            val missing = arrayOf(Manifest.permission.READ_CALL_LOG, Manifest.permission.READ_PHONE_STATE).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+            val missing = requiredPermissions().filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
             if (missing.isNotEmpty()) root.addView(button("Restore call permissions") { requestPermissions(missing.toTypedArray(), 12) })
             root.addView(button("Check and sync now") {
-                if (missing.isNotEmpty()) { message("Both Call logs and Phone permissions are needed. Restore permissions first."); return@button }
+                if (missing.isNotEmpty()) { message("Call logs and the requested Phone permissions are needed. Restore permissions first."); return@button }
                 Scheduler.ensure(this); Scheduler.manual(this)
                 AlertDialog.Builder(this).setMessage("Sync requested. Android may delay it. Reopen this screen to see the status.").setPositiveButton("OK", null).show()
             })
@@ -82,11 +82,16 @@ class MainActivity : Activity() {
         }
         setContentView(ScrollView(this).apply { addView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)) })
     }
+    private fun requiredPermissions(): List<String> = buildList {
+        add(Manifest.permission.READ_CALL_LOG)
+        add(Manifest.permission.READ_PHONE_STATE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) add(Manifest.permission.READ_PHONE_NUMBERS)
+    }
     private fun requestRegistration() {
         if (busy) return
         if (!consent.isChecked) { message("Please read the disclosure and consent before registering."); return }
         if (email.text.toString().trim().isEmpty() || password.text.isEmpty()) { message("Enter your CRM email and password."); return }
-        val missing = arrayOf(Manifest.permission.READ_CALL_LOG, Manifest.permission.READ_PHONE_STATE).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        val missing = requiredPermissions().filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isNotEmpty()) {
             permissionPending = true
             requestPermissions(missing.toTypedArray(), 11)
@@ -98,14 +103,14 @@ class MainActivity : Activity() {
         if (requestCode == 12) {
             if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
                 Scheduler.ensure(this); Scheduler.manual(this)
-            } else message("Both permissions are needed for SIM call sync.")
+            } else message("The requested permissions are needed for SIM call sync.")
             render()
             return
         }
         if (requestCode != 11) return
         permissionPending = false
         if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) enroll()
-        else message("Both Call logs and Phone permissions are needed to identify SIM calls. You can change them in Android Settings.")
+        else message("Call logs and the requested Phone permissions are needed to identify SIM calls. You can change them in Android Settings.")
     }
     private fun enroll() {
         val username = email.text.toString().trim()

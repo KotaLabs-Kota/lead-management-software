@@ -8,6 +8,7 @@ import android.telecom.PhoneAccount
 import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
 import android.os.Bundle
+import android.os.Build
 import android.provider.CallLog
 import android.view.Gravity
 import android.view.ViewGroup
@@ -42,6 +43,7 @@ class MainActivity : Activity() {
         page.addView(label(
             "Feasibility test only. Reads the 50 most recent calls when you tap the button. " +
                 "Call logs and Phone permissions let the app check call entries and whether Android identifies their account as a SIM. " +
+                "On Android 12 or newer, Phone number permission is needed to inspect the phone account; this app does not read your own phone number. " +
                 "Numbers are masked. Nothing is uploaded, recorded, or saved by this app.", 16f
         ))
         refresh = Button(this).apply {
@@ -68,14 +70,18 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun hasPermissions() = listOf(Manifest.permission.READ_CALL_LOG, Manifest.permission.READ_PHONE_STATE)
-        .all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
+    private fun requiredPermissions(): List<String> = buildList {
+        add(Manifest.permission.READ_CALL_LOG)
+        add(Manifest.permission.READ_PHONE_STATE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) add(Manifest.permission.READ_PHONE_NUMBERS)
+    }
+    private fun hasPermissions() = requiredPermissions().all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
 
     private fun requestOrRefresh() {
         if (hasPermissions()) {
             loadCalls()
         } else {
-            requestPermissions(arrayOf(Manifest.permission.READ_CALL_LOG, Manifest.permission.READ_PHONE_STATE), CALL_LOG_REQUEST)
+            requestPermissions(requiredPermissions().filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }.toTypedArray(), CALL_LOG_REQUEST)
         }
     }
 
@@ -144,12 +150,14 @@ class MainActivity : Activity() {
                 val eligibility = if (callType == CallLog.Calls.INCOMING_TYPE || callType == CallLog.Calls.MISSED_TYPE) {
                     val component = if (it.isNull(componentCol)) null else ComponentName.unflattenFromString(it.getString(componentCol))
                     val accountId = if (it.isNull(accountCol)) null else it.getString(accountCol)
+                    var accountPermissionDenied = false
                     val account = if (component != null && accountId != null) try {
                         telecom?.getPhoneAccount(PhoneAccountHandle(component, accountId))
-                    } catch (_: SecurityException) { null } else null
+                    } catch (_: SecurityException) { accountPermissionDenied = true; null } else null
                     when {
                         it.isNull(dateCol) || it.getLong(dateCol) <= 0 -> "Time missing"
                         component == null || accountId == null -> "Phone account ID missing"
+                        accountPermissionDenied -> "Phone account access denied"
                         account == null -> "Phone account unavailable to app"
                         !account.hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION) -> "Account not identified as SIM"
                         it.isNull(presentationCol) || it.getInt(presentationCol) != CallLog.Calls.PRESENTATION_ALLOWED -> "Caller presentation unavailable or restricted"

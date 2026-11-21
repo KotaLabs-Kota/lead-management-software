@@ -35,3 +35,5 @@ Only after the real-device feasibility test: design a consent-based background s
 ## GitHub Actions test APK
 
 The **Android call feasibility build** workflow builds a debug APK when Android files change or when manually triggered. A successful run publishes the `CRM-call-feasibility-debug` artifact for seven days; downloading it requires access to the repository. Extract the ZIP and transfer the APK securely to the consenting test phone. A debug APK is for private feasibility testing, not production distribution or a Play Store release. The workflow must run successfully before an artifact exists.
+
+On Android 12 and later, Android requires the Phone number permission to query phone-account details used to identify a SIM account. The app does not read the device owner’s phone number. Phone-account access can still be unavailable on some devices.

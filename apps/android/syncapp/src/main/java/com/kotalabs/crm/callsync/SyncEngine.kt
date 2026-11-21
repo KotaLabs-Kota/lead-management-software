@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
 import android.provider.CallLog
 import android.telecom.PhoneAccount
 import android.telecom.PhoneAccountHandle
@@ -21,13 +22,14 @@ internal object SyncEngine {
     fun getStatus(context: Context) = context.getSharedPreferences("sync_status", Context.MODE_PRIVATE).getString("status", "Not synced yet.") ?: ""
     private fun permitted(context: Context) =
         context.checkSelfPermission(Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED &&
-        context.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
+        context.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED &&
+        (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || context.checkSelfPermission(Manifest.permission.READ_PHONE_NUMBERS) == PackageManager.PERMISSION_GRANTED)
 
     fun run(context: Context) = synchronized(lock) {
         val secure = SecureStore(context)
         val enrollment = secure.load() ?: return@synchronized
         if (secure.isBlocked()) { status(context, "Device access stopped by server. Ask your administrator to check the device."); return@synchronized }
-        if (!permitted(context)) { status(context, "Permission missing. Open the app and allow Call logs and Phone."); return@synchronized }
+        if (!permitted(context)) { status(context, "Permission missing. Open the app and allow the requested Call logs and Phone permissions."); return@synchronized }
         Queue(context, secure).use { queue ->
             val skipped = scan(context, enrollment, queue)
             val count = queue.count("pending")
