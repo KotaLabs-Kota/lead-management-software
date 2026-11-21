@@ -222,17 +222,20 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
           <Card title={`Call history (${leadCalls.length})`}>
             {callsQuery.isPending ? (
               <Spinner />
+            ) : callsQuery.isError ? (
+              <ErrorState message="Could not load call history." onRetry={() => void callsQuery.refetch()} />
             ) : leadCalls.length === 0 ? (
               <p className="text-sm text-slate-500">No calls recorded for this lead yet.</p>
             ) : (
-              <table className="w-full text-sm">
+              <div className="overflow-x-auto">
+              <table className="w-full min-w-[580px] text-sm">
                 <thead>
                   <tr className="text-left text-xs uppercase tracking-wide text-slate-500">
                     <th className="pb-2 font-medium">When</th>
                     <th className="pb-2 font-medium">Direction</th>
                     <th className="pb-2 font-medium">Source</th>
                     <th className="pb-2 text-right font-medium">Duration</th>
-                    <th className="pb-2 font-medium">By</th>
+                    <th className="pb-2 pl-4 font-medium">By</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -247,11 +250,12 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
                       </td>
                       <td className="py-2 text-slate-700">{call.source}</td>
                       <td className="py-2 text-right">{formatDuration(call.durationSeconds)}</td>
-                      <td className="py-2 text-slate-700">{call.userName ?? '—'}</td>
+                      <td className="py-2 pl-4 text-slate-700">{call.userName ?? '—'}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
           </Card>
         </div>
