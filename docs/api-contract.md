@@ -121,3 +121,9 @@ Rules:
 
 - Global: 600 requests / 15 min per IP (configurable).
 - Auth endpoints: 20 attempts / 15 min per IP (successful requests excluded).
+
+### Android test sync gate and self-revocation
+
+- `GET /api/v1/call-sync/capability` requires a user JWT and reports `{ enabled: boolean }`. The test app refuses enrollment when this is false or the endpoint is missing.
+- `POST /api/v1/call-sync/events` accepts only a device token and the existing event/batch format; it returns 503 when `CALL_EVENT_AUTO_CREATE_LEAD` is false. This does not disable the older call-events API.
+- `POST /api/v1/devices/self/revoke` requires a device token and revokes that token. If offline, an administrator must revoke the device instead.

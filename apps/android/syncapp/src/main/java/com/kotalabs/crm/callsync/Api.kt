@@ -6,7 +6,7 @@ import java.net.URL
 
 /** Fixed HTTPS origin prevents redirecting credentials to an untrusted endpoint. */
 internal object Api {
-    private const val ORIGIN = "https://lead-management-software-eight.vercel.app"
+    private val ORIGIN = BuildConfig.CRM_SYNC_ORIGIN
     class HttpError(val status: Int) : Exception("Server returned HTTP $status")
 
     fun get(path: String, token: String): JSONObject = request(path, null, token)

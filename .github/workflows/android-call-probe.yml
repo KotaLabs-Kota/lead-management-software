@@ -30,6 +30,8 @@ jobs:
           test -f "$ANDROID_HOME/platforms/android-35/android.jar"
       - name: Build debug APK
         working-directory: apps/android
+        env:
+          CRM_SYNC_ORIGIN: ${{ vars.CRM_SYNC_ORIGIN }}
         run: ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug :syncapp:testDebugUnitTest :syncapp:assembleDebug
       - name: Upload test APK
         uses: actions/upload-artifact@v4

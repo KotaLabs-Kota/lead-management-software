@@ -204,15 +204,17 @@ export async function getLead(req: Request, res: Response): Promise<void> {
   if (!lead) throw notFound('Lead');
   // Respect the same employee access rules for every historical record. Never
   // reveal another employee's assigned leads through the returning-contact view.
-  const historyParams: unknown[] = [lead.phone, lead.created_at, id];
+  const historyParams: unknown[] = [lead.phone, id];
   const historyScope = req.auth!.role === 'ADMIN'
     ? ''
-    : `AND (l.assigned_user_id = $4 OR l.assigned_user_id IS NULL)`;
+    : `AND (l.assigned_user_id = $3 OR l.assigned_user_id IS NULL)`;
   if (req.auth!.role !== 'ADMIN') historyParams.push(req.auth!.userId);
   const previousLeads = await many<{ id: string; lead_number: number; status: string; customer_name: string; created_at: Date }>(
     `SELECT l.id, l.lead_number, l.status, l.customer_name, l.created_at
-       FROM leads l WHERE l.phone = $1 AND l.created_at < $2 AND l.id <> $3 ${historyScope}
-       ORDER BY l.created_at DESC LIMIT 25`, historyParams,
+       FROM leads l WHERE l.phone = $1 AND l.id <> $2
+         AND (l.created_at, l.lead_number) < (SELECT created_at, lead_number FROM leads WHERE id = $2)
+         ${historyScope}
+       ORDER BY l.created_at DESC, l.lead_number DESC LIMIT 25`, historyParams,
   );
   res.status(200).json({
     lead: publicLead(lead),
@@ -311,11 +313,12 @@ export async function updateLead(req: Request, res: Response): Promise<void> {
     sets.push(`${column} = $${params.length}`);
   };
 
+  let updatedPhone = existing.phone;
   if (input.customerName !== undefined) push('customer_name', input.customerName);
   if (input.phone !== undefined) {
     const phone = normalizePhone(input.phone);
     if (!phone) throw validationError('phone is not a valid phone number');
-    await assertNoOpenDuplicate(phone, id);
+    updatedPhone = phone;
     push('phone', phone);
   }
   if (input.alternatePhone !== undefined) {
@@ -355,6 +358,20 @@ export async function updateLead(req: Request, res: Response): Promise<void> {
 
   params.push(id);
   const updated = await withTransaction(async (client) => {
+    // Acquire the same per-phone locks as ingestion in a consistent order. This
+    // also protects phone edits/reopening from racing automatic lead creation.
+    for (const phone of [...new Set([existing.phone, updatedPhone])].sort()) {
+      await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`phone:${phone}`]);
+    }
+    const current = await maybeOne<{ phone: string; status: string; assigned_user_id: string | null }>(
+      `SELECT l.phone, l.status, l.assigned_user_id FROM leads l WHERE l.id = $1 ${scopeClause} FOR UPDATE`, scopeParams, client,
+    );
+    if (!current) throw notFound('Lead');
+    if (current.phone !== existing.phone || current.status !== existing.status || current.assigned_user_id !== existing.assigned_user_id) {
+      throw conflict('Lead changed while you were editing; please reload and retry');
+    }
+    const reopening = input.status !== undefined && OPEN_LEAD_STATUSES.includes(input.status) && !OPEN_LEAD_STATUSES.some((status) => status === existing.status);
+    if (input.phone !== undefined || reopening) await assertNoOpenDuplicate(updatedPhone, id, client);
     const row = await one<LeadRow>(
       `UPDATE leads SET ${sets.join(', ')} WHERE id = $${params.length}
        RETURNING id, lead_number, customer_name, phone, alternate_phone, email, city,

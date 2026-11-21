@@ -1,3 +1,7 @@
+# Earlier design notes
+
+The separate `syncapp` module now implements an experimental version; see `syncapp/README.md` for current behavior and testing prerequisites. The original diagnostic `app` remains local-only.
+
 # Call sync work in progress — not active in the diagnostic app
 
 The currently installable app is still local-only; it does not register a device or send calls. Do not use this unfinished design for production.

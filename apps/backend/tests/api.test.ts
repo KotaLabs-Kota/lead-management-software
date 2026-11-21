@@ -479,6 +479,29 @@ describe('call events', () => {
     }
   });
 
+  it('prevents a reopened lead from racing with automatic call lead creation', async () => {
+    const phone = '+919876000128';
+    const created = await request(app).post('/api/v1/leads').set('Authorization', `Bearer ${adminToken}`)
+      .send({ customerName: 'Closed lead', phone, source: 'MANUAL', assignedUserId: employeeId }).expect(201);
+    const id = created.body.lead.id as string;
+    await request(app).patch(`/api/v1/leads/${id}`).set('Authorization', `Bearer ${adminToken}`).send({ status: 'CONVERTED' }).expect(200);
+    env.CALL_EVENT_AUTO_CREATE_LEAD = true;
+    try {
+      const [reopened, call] = await Promise.all([
+        request(app).patch(`/api/v1/leads/${id}`).set('Authorization', `Bearer ${adminToken}`).send({ status: 'NEW' }),
+        request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${deviceToken}`)
+          .send({ eventId: randomUUID(), phoneNumber: phone, direction: 'MISSED', source: 'SIM', startedAt: '2026-11-21T14:00:00+05:30' }),
+      ]);
+      expect([200, 409]).toContain(reopened.status);
+      expect(call.body.summary.created).toBe(1);
+      const leads = await request(app).get(`/api/v1/leads?search=${encodeURIComponent(phone)}`)
+        .set('Authorization', `Bearer ${adminToken}`).expect(200);
+      const open = leads.body.leads.filter((lead: {status: string}) => !['CONVERTED', 'LOST'].includes(lead.status));
+      expect(open).toHaveLength(1);
+      expect(call.body.results[0].callEvent.leadId).toBe(open[0].id);
+    } finally { env.CALL_EVENT_AUTO_CREATE_LEAD = false; }
+  });
+
   it('does not expose previous leads assigned to another employee', async () => {
     const auth = `Bearer ${adminToken}`;
     const old = await request(app).post('/api/v1/leads').set('Authorization', auth)

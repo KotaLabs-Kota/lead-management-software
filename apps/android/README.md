@@ -1,5 +1,7 @@
 # Stage 4: Android call-history feasibility probe
 
+A separate experimental sync app now exists under [`syncapp/`](syncapp/README.md). This page describes the original probe only.
+
 This is **not** the CRM sync app. It is an opt-in, foreground-only diagnostic for real Android phones (Android 8 / API 26 or newer). It reads at most the 50 most recent entries from the phone's call log when the tester taps Refresh, and shows their type, local time, duration and masked number. It does not upload anything, create leads, record audio, continuously track calls, or write call history to its own storage. It cannot access a call the phone did not receive or record. WhatsApp call capture is not supported.
 
 ## Build and install
@@ -24,9 +26,9 @@ Use consenting participants and test numbers, not customer data. Record the phon
 
 Run on each staff device. Restricted/private caller numbers may be unavailable. A provider may classify rejected/busy calls differently; never infer a missed call when no record exists. Manufacturer battery restrictions and ongoing background detection are **not** tested by this foreground probe.
 
-## Next stage (not implemented)
+## Original next-stage plan (see syncapp for work in progress)
 
-Only after the real-device feasibility test: design a consent-based background sync, stable event IDs and retry/deduplication, secure device enrollment, and a backend transaction that creates an open lead for a new number, links calls to an existing open lead, and tags a new lead as a returning contact when matching prior closed leads. Define history visibility under employee access controls and test races, private numbers, spam, closed leads and duplicate deliveries. Existing backend call events intentionally **do not** create leads. This diagnostic does not change that behavior.
+Only after the real-device feasibility test: design a consent-based background sync, stable event IDs and retry/deduplication, secure device enrollment, and a backend transaction that creates an open lead for a new number, links calls to an existing open lead, and tags a new lead as a returning contact when matching prior closed leads. Define history visibility under employee access controls and test races, private numbers, spam, closed leads and duplicate deliveries. The backend can optionally create leads for device calls when explicitly enabled; it defaults off. This diagnostic does not change that behavior.
 
 `READ_CALL_LOG` is a sensitive Android permission. Google Play restricts its use; eligibility and distribution approach must be checked before any public release. Do not request unnecessary permissions or use Accessibility workarounds.
 
