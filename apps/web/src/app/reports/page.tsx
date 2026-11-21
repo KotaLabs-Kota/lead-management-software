@@ -24,6 +24,10 @@ export default function ReportsPage() {
   const [exportSource, setExportSource] = useState('');
   const [exportAssignee, setExportAssignee] = useState('');
   const [exporting, setExporting] = useState(false);
+  const [exportFrom, setExportFrom] = useState('');
+  const [exportTo, setExportTo] = useState('');
+  const [exportPage, setExportPage] = useState(1);
+  const [exportMessage, setExportMessage] = useState('');
 
   const users = useQuery({
     queryKey: ['users', 'active'],
@@ -39,18 +43,33 @@ export default function ReportsPage() {
       ),
   });
 
-  async function onExport() {
+  async function onExport(format: 'csv' | 'pdf') {
+    if (exportFrom && exportTo && exportFrom > exportTo) {
+      toast.push('error', 'The start date must not be after the end date.');
+      return;
+    }
+    const limit = format === 'pdf' ? 500 : 5000;
+    const offset = (exportPage - 1) * limit;
+    if (offset > 1000000) { toast.push('error', 'Export page is too large. Use a narrower date range.'); return; }
     setExporting(true);
+    setExportMessage('');
     try {
-      await downloadFile(
-        `/api/v1/reports/leads.csv${toQuery({
+      const result = await downloadFile(
+        `/api/v1/reports/leads.${format}${toQuery({
           status: exportStatus || undefined,
           source: exportSource || undefined,
           assignedUserId: exportAssignee || undefined,
+          from: exportFrom ? `${exportFrom}T00:00:00+05:30` : undefined,
+          to: exportTo ? `${exportTo}T23:59:59.999+05:30` : undefined,
+          limit, offset,
         })}`,
-        'kotalabs-leads.csv',
+        `kotalabs-leads-page-${exportPage}.${format}`,
       );
-      toast.push('success', 'CSV export downloaded');
+      const message = result.hasMore
+        ? `${format.toUpperCase()} page ${exportPage} downloaded. More leads exist; increase Export page to download the next batch.`
+        : `${format.toUpperCase()} page ${exportPage} downloaded. No more leads after this page.`;
+      setExportMessage(message);
+      toast.push('success', message);
     } catch {
       toast.push('error', 'Could not export leads. Please try again.');
     } finally {
@@ -60,13 +79,17 @@ export default function ReportsPage() {
 
   return (
     <div className="space-y-6">
-      <Card
-        title="Export leads to CSV"
+      {user?.role === 'ADMIN' ? <Card
+        title="Export leads"
         action={
-          <Button onClick={onExport} disabled={exporting}>
-            <Download className="h-4 w-4" />
-            {exporting ? 'Exporting…' : 'Download CSV'}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => void onExport('csv')} disabled={exporting}>
+              <Download className="h-4 w-4" /> Download CSV
+            </Button>
+            <Button variant="secondary" onClick={() => void onExport('pdf')} disabled={exporting}>
+              <Download className="h-4 w-4" /> Download PDF
+            </Button>
+          </div>
         }
       >
         <div className="flex flex-wrap items-end gap-3">
@@ -78,7 +101,7 @@ export default function ReportsPage() {
               id="exportStatus"
               className="w-44"
               value={exportStatus}
-              onChange={(event) => setExportStatus(event.target.value)}
+              onChange={(event) => { setExportStatus(event.target.value); setExportPage(1); setExportMessage(''); }}
             >
               <option value="">All statuses</option>
               {STATUSES.map((value) => (
@@ -96,7 +119,7 @@ export default function ReportsPage() {
               id="exportSource"
               className="w-44"
               value={exportSource}
-              onChange={(event) => setExportSource(event.target.value)}
+              onChange={(event) => { setExportSource(event.target.value); setExportPage(1); setExportMessage(''); }}
             >
               <option value="">All sources</option>
               {SOURCES.map((value) => (
@@ -115,7 +138,7 @@ export default function ReportsPage() {
                 id="exportAssignee"
                 className="w-44"
                 value={exportAssignee}
-                onChange={(event) => setExportAssignee(event.target.value)}
+                onChange={(event) => { setExportAssignee(event.target.value); setExportPage(1); setExportMessage(''); }}
               >
                 <option value="">Everyone</option>
                 {users.data?.users.map((candidate) => (
@@ -126,12 +149,21 @@ export default function ReportsPage() {
               </Select>
             </div>
           ) : null}
+          <div><label htmlFor="exportFrom" className="mb-1 block text-sm font-medium text-slate-700">Created from</label>
+            <Input id="exportFrom" type="date" value={exportFrom} onChange={(e) => { setExportFrom(e.target.value); setExportPage(1); setExportMessage(''); }} /></div>
+          <div><label htmlFor="exportTo" className="mb-1 block text-sm font-medium text-slate-700">Created to</label>
+            <Input id="exportTo" type="date" value={exportTo} onChange={(e) => { setExportTo(e.target.value); setExportPage(1); setExportMessage(''); }} /></div>
+          <div><label htmlFor="exportPage" className="mb-1 block text-sm font-medium text-slate-700">Export page</label>
+            <Input id="exportPage" className="w-28" type="number" min={1} max={2001} value={exportPage}
+              onChange={(e) => { setExportPage(Math.min(2001, Math.max(1, Math.trunc(Number(e.target.value) || 1)))); setExportMessage(''); }} /></div>
         </div>
         <p className="mt-3 text-xs text-slate-500">
-          The CSV opens directly in Excel (UTF-8 with BOM) and includes lead code, customer, phone,
-          vehicle, source, status, assignee, notes, and dates. Employees only export their own leads.
+          Admin only. CSV and PDF include lead details, notes and dates. Dates filter when leads were created in IST.
+          Each CSV page has up to 5,000 leads; each PDF page has up to 500 leads. Download additional export pages as needed; changing filters resets the page.
+          Exports are not snapshots, so results can change while leads are being edited.
         </p>
-      </Card>
+        {exportMessage ? <p role="status" className="mt-2 text-sm text-indigo-700">{exportMessage}</p> : null}
+      </Card> : null}
 
       <div className="flex flex-wrap items-end gap-3">
         <div>

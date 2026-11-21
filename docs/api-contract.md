@@ -102,7 +102,10 @@ Rules:
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/summary` | user | Dashboard payload: totals, by-status, by-source (with conversion rate), per-employee performance. Query: `date (YYYY-MM-DD), userId (admin)` |
-| GET | `/leads.csv` | user | CSV export (Excel-ready, UTF-8 BOM). Query: `status, source, assignedUserId, search, from, to, limit` |
+| GET | `/leads.csv` | admin | CSV export (UTF-8 BOM, formula-protected). Query: `status, source, assignedUserId, search, from, to, limit, offset` (default limit 5,000; max 10,000) |
+| GET | `/leads.pdf` | admin | PDF lead export with the same filters; max 500 per request, default 500. `X-Export-Has-More` indicates another page. |
+
+Exports are bounded and offset-paginated rather than snapshots: new or changed leads during a multi-page export can change which rows appear. Both formats contain customer data and should be stored securely.
 
 ## Error codes
 

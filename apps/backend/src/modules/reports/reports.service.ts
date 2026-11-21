@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express';
+import PDFDocument from 'pdfkit';
 import { many, one } from '../../db/pool';
 import { formatLeadNumber } from '../../types/domain';
 import { formatPhone } from '../../utils/phone';
@@ -55,7 +56,9 @@ interface LeadExportRow {
 
 function csvEscape(value: unknown): string {
   if (value === null || value === undefined) return '';
-  const text = value instanceof Date ? value.toISOString() : String(value);
+  let text = value instanceof Date ? value.toISOString() : String(value);
+  // Spreadsheet apps may execute cells beginning with formula characters.
+  if (/^[\s\u0000-\u001f]*[=+\-@]/.test(text)) text = "'" + text;
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
@@ -74,7 +77,7 @@ function toCsv(headers: string[], rows: unknown[][]): string {
  */
 export async function summary(req: Request, res: Response): Promise<void> {
   const query = req.query as unknown as SummaryQuery;
-  const date = query.date ?? new Date().toISOString().slice(0, 10);
+  const date = query.date ?? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 
   // Employees only ever see their own numbers.
   const userFilter = req.auth!.role === 'ADMIN' ? query.userId ?? null : req.auth!.userId;
@@ -98,26 +101,39 @@ export async function summary(req: Request, res: Response): Promise<void> {
     [userFilter],
   );
 
+  // Aggregate independently before joining to avoid a leads × followups × calls
+  // cross-product, which becomes prohibitively expensive as call history grows.
   const employeeRows = await many<EmployeeRow>(
     `SELECT u.id AS user_id, u.name, u.email, u.role,
-            COUNT(DISTINCT l.id) AS total_leads,
-            COUNT(DISTINCT l.id) FILTER (WHERE l.status = 'NEW') AS new_leads,
-            COUNT(DISTINCT l.id) FILTER (WHERE l.status = 'CONTACTED') AS contacted,
-            COUNT(DISTINCT l.id) FILTER (WHERE l.status = 'INTERESTED') AS interested,
-            COUNT(DISTINCT l.id) FILTER (WHERE l.status = 'CONVERTED') AS converted,
-            COUNT(DISTINCT l.id) FILTER (WHERE l.status = 'LOST') AS lost,
-            COUNT(DISTINCT f.id) FILTER (WHERE f.status = 'PENDING') AS pending_followups,
-            COUNT(DISTINCT f.id) FILTER (WHERE f.status = 'PENDING' AND f.due_at < now()) AS overdue_followups,
-            COUNT(DISTINCT ce.id) FILTER (WHERE ce.started_at::date = $1::date) AS calls_today,
-            COUNT(DISTINCT ce.id) AS calls_total
+            COALESCE(l.total_leads, 0) AS total_leads, COALESCE(l.new_leads, 0) AS new_leads,
+            COALESCE(l.contacted, 0) AS contacted, COALESCE(l.interested, 0) AS interested,
+            COALESCE(l.converted, 0) AS converted, COALESCE(l.lost, 0) AS lost,
+            COALESCE(f.pending_followups, 0) AS pending_followups,
+            COALESCE(f.overdue_followups, 0) AS overdue_followups,
+            COALESCE(c.calls_today, 0) AS calls_today, COALESCE(c.calls_total, 0) AS calls_total
        FROM users u
-       LEFT JOIN leads l ON l.assigned_user_id = u.id
-       LEFT JOIN followups f ON f.assigned_user_id = u.id
-       LEFT JOIN call_events ce ON ce.user_id = u.id
-      WHERE u.status = 'ACTIVE'
-        AND ($2::uuid IS NULL OR u.id = $2)
-      GROUP BY u.id, u.name, u.email, u.role
-      ORDER BY total_leads DESC`,
+       LEFT JOIN (
+         SELECT assigned_user_id, COUNT(*) AS total_leads,
+           COUNT(*) FILTER (WHERE status = 'NEW') AS new_leads,
+           COUNT(*) FILTER (WHERE status = 'CONTACTED') AS contacted,
+           COUNT(*) FILTER (WHERE status = 'INTERESTED') AS interested,
+           COUNT(*) FILTER (WHERE status = 'CONVERTED') AS converted,
+           COUNT(*) FILTER (WHERE status = 'LOST') AS lost
+         FROM leads WHERE ($2::uuid IS NULL OR assigned_user_id = $2) GROUP BY assigned_user_id
+       ) l ON l.assigned_user_id = u.id
+       LEFT JOIN (
+         SELECT assigned_user_id, COUNT(*) FILTER (WHERE status = 'PENDING') AS pending_followups,
+           COUNT(*) FILTER (WHERE status = 'PENDING' AND due_at < now()) AS overdue_followups
+         FROM followups WHERE ($2::uuid IS NULL OR assigned_user_id = $2) GROUP BY assigned_user_id
+       ) f ON f.assigned_user_id = u.id
+       LEFT JOIN (
+         SELECT user_id, COUNT(*) AS calls_total,
+           COUNT(*) FILTER (WHERE started_at >= ($1::date::timestamp AT TIME ZONE 'Asia/Kolkata')
+             AND started_at < (($1::date + 1)::timestamp AT TIME ZONE 'Asia/Kolkata')) AS calls_today
+         FROM call_events WHERE ($2::uuid IS NULL OR user_id = $2) GROUP BY user_id
+       ) c ON c.user_id = u.id
+       WHERE u.status = 'ACTIVE' AND ($2::uuid IS NULL OR u.id = $2)
+       ORDER BY total_leads DESC, u.id`,
     [date, userFilter],
   );
 
@@ -133,7 +149,8 @@ export async function summary(req: Request, res: Response): Promise<void> {
     `SELECT
        (SELECT COUNT(*) FROM leads WHERE ($1::uuid IS NULL OR assigned_user_id = $1)) AS total_leads,
        (SELECT COUNT(*) FROM leads
-         WHERE created_at::date = $2::date
+         WHERE created_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Kolkata')
+           AND created_at < (($2::date + 1)::timestamp AT TIME ZONE 'Asia/Kolkata')
            AND ($1::uuid IS NULL OR assigned_user_id = $1)) AS new_today,
        (SELECT COUNT(*) FROM followups
          WHERE status = 'PENDING'
@@ -142,7 +159,8 @@ export async function summary(req: Request, res: Response): Promise<void> {
          WHERE status = 'PENDING' AND due_at < now()
            AND ($1::uuid IS NULL OR assigned_user_id = $1)) AS overdue_followups,
        (SELECT COUNT(*) FROM call_events
-         WHERE started_at::date = $2::date
+         WHERE started_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Kolkata')
+           AND started_at < (($2::date + 1)::timestamp AT TIME ZONE 'Asia/Kolkata')
            AND ($1::uuid IS NULL OR user_id = $1)) AS calls_today,
        (SELECT COUNT(*) FROM call_events WHERE ($1::uuid IS NULL OR user_id = $1)) AS calls_total,
        (SELECT COUNT(*) FROM call_events
@@ -168,11 +186,9 @@ export async function summary(req: Request, res: Response): Promise<void> {
 /**
  * GET /api/v1/reports/leads.csv
  *
- * CSV export (opens directly in Excel). Employees only get their own leads.
- * A UTF-8 BOM is prepended so Excel renders Indian names correctly.
+ * Shared bounded query for admin-only CSV and PDF exports.
  */
-export async function exportLeadsCsv(req: Request, res: Response): Promise<void> {
-  const query = req.query as unknown as ExportLeadsQuery;
+async function loadExportLeads(query: ExportLeadsQuery): Promise<{ leads: LeadExportRow[]; hasMore: boolean }> {
   const conditions: string[] = [];
   const params: unknown[] = [];
   const push = (value: unknown) => {
@@ -180,9 +196,7 @@ export async function exportLeadsCsv(req: Request, res: Response): Promise<void>
     return `$${params.length}`;
   };
 
-  if (req.auth!.role !== 'ADMIN') {
-    conditions.push(`l.assigned_user_id = ${push(req.auth!.userId)}`);
-  } else if (query.assignedUserId) {
+  if (query.assignedUserId) {
     conditions.push(`l.assigned_user_id = ${push(query.assignedUserId)}`);
   }
   if (query.status) conditions.push(`l.status = ${push(query.status)}`);
@@ -207,12 +221,14 @@ export async function exportLeadsCsv(req: Request, res: Response): Promise<void>
        FROM leads l
        LEFT JOIN users au ON au.id = l.assigned_user_id
        ${where}
-       ORDER BY l.created_at DESC
-       LIMIT ${push(query.limit)}`,
+       ORDER BY l.created_at DESC, l.id DESC
+       LIMIT ${push(query.limit + 1)} OFFSET ${push(query.offset)}`,
     params,
   );
+  return { leads: leads.slice(0, query.limit), hasMore: leads.length > query.limit };
+}
 
-  const headers = [
+const exportHeaders = [
     'Lead Code',
     'Customer Name',
     'Phone',
@@ -233,7 +249,8 @@ export async function exportLeadsCsv(req: Request, res: Response): Promise<void>
     'Updated At',
   ];
 
-  const rows = leads.map((lead) => [
+function exportRows(leads: LeadExportRow[]): unknown[][] {
+  return leads.map((lead) => [
     formatLeadNumber(lead.lead_number),
     lead.customer_name,
     formatPhone(lead.phone),
@@ -253,11 +270,49 @@ export async function exportLeadsCsv(req: Request, res: Response): Promise<void>
     lead.created_at,
     lead.updated_at,
   ]);
+}
 
-  const csv = '﻿' + toCsv(headers, rows);
+function setExportHeaders(res: Response, count: number, hasMore: boolean): void {
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Export-Row-Count', String(count));
+  res.setHeader('X-Export-Has-More', String(hasMore));
+}
 
+/** CSV with a UTF-8 BOM and spreadsheet formula protection. */
+export async function exportLeadsCsv(req: Request, res: Response): Promise<void> {
+  const query = req.query as unknown as ExportLeadsQuery;
+  const { leads, hasMore } = await loadExportLeads(query);
+  const csv = '\uFEFF' + toCsv(exportHeaders, exportRows(leads));
+  setExportHeaders(res, leads.length, hasMore);
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="kotalabs-leads.csv"');
-  res.setHeader('X-Export-Row-Count', String(leads.length));
   res.send(csv);
+}
+
+/** Generate a paginated PDF with the same filtered fields as the CSV. */
+export async function exportLeadsPdf(req: Request, res: Response): Promise<void> {
+  const query = req.query as unknown as ExportLeadsQuery;
+  const { leads, hasMore } = await loadExportLeads(query);
+  // This font covers Devanagari and Latin so customer names can appear correctly.
+  const fontPath = require.resolve('@expo-google-fonts/noto-sans-devanagari/400Regular/NotoSansDevanagari_400Regular.ttf');
+  const doc = new PDFDocument({ size: 'A4', margin: 40, info: { Title: 'KotaLabs CRM lead export' } });
+  doc.font(fontPath);
+  setExportHeaders(res, leads.length, hasMore);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', 'attachment; filename="kotalabs-leads.pdf"');
+  doc.pipe(res);
+  doc.fontSize(16).text('KotaLabs CRM — Lead export');
+  doc.fontSize(9).text(`Records ${query.offset + (leads.length ? 1 : 0)}–${query.offset + leads.length}${hasMore ? ' (more records available; export the next page)' : ''}`);
+  doc.moveDown();
+  if (leads.length === 0) doc.fontSize(10).text('No leads match these filters.');
+  for (const row of exportRows(leads)) {
+    doc.fontSize(12).text(String(row[0] ?? 'Lead'), { underline: true });
+    doc.fontSize(9);
+    row.slice(1).forEach((value, index) => {
+      const content = value instanceof Date ? value.toISOString() : value == null || value === '' ? '—' : String(value);
+      doc.text(`${exportHeaders[index + 1]}: ${content}`);
+    });
+    doc.moveDown();
+  }
+  doc.end();
 }

@@ -719,6 +719,61 @@ describe('reports', () => {
     expect(res.body.employees.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('evaluates call counts on the requested IST date, including the UTC day boundary', async () => {
+    const event = { eventId: randomUUID(), phoneNumber: '+919876000196', direction: 'OUTGOING',
+      startedAt: '2025-01-01T20:00:00Z', source: 'SIM' };
+    await request(app).post('/api/v1/call-events').set('Authorization', `Bearer ${employeeToken}`).send(event).expect(201);
+    const report = await request(app).get(`/api/v1/reports/summary?date=2025-01-02&userId=${employeeId}`)
+      .set('Authorization', `Bearer ${adminToken}`).expect(200);
+    expect(report.body.totals.calls_today).toBe(1);
+    expect(report.body.employees.find((u: {user_id: string}) => u.user_id === employeeId).calls_today).toBe(1);
+    const previous = await request(app).get(`/api/v1/reports/summary?date=2025-01-01&userId=${employeeId}`)
+      .set('Authorization', `Bearer ${adminToken}`).expect(200);
+    expect(previous.body.totals.calls_today).toBe(0);
+  });
+
+  it('restricts both exports to administrators and validates the PDF limit', async () => {
+    for (const format of ['csv', 'pdf']) {
+      await request(app).get(`/api/v1/reports/leads.${format}`).expect(401);
+      await request(app).get(`/api/v1/reports/leads.${format}`)
+        .set('Authorization', `Bearer ${employeeToken}`).expect(403);
+    }
+    await request(app).get('/api/v1/reports/leads.pdf?limit=501')
+      .set('Authorization', `Bearer ${adminToken}`).expect(422);
+  });
+
+  it('exports an admin PDF with filters, page metadata and a valid PDF ending', async () => {
+    const res = await request(app).get('/api/v1/reports/leads.pdf?limit=1&offset=0')
+      .set('Authorization', `Bearer ${adminToken}`).expect(200);
+    expect(res.headers['content-type']).toContain('application/pdf');
+    expect(res.headers['content-disposition']).toContain('attachment');
+    expect(res.headers['cache-control']).toBe('no-store');
+    expect(res.headers['x-export-row-count']).toBe('1');
+    expect(res.headers['x-export-has-more']).toBe('true');
+    const nextPage = await request(app).get('/api/v1/reports/leads.csv?limit=1&offset=1')
+      .set('Authorization', `Bearer ${adminToken}`).expect(200);
+    const firstPage = await request(app).get('/api/v1/reports/leads.csv?limit=1&offset=0')
+      .set('Authorization', `Bearer ${adminToken}`).expect(200);
+    expect(nextPage.headers['x-export-row-count']).toBe('1');
+    expect(nextPage.text).not.toBe(firstPage.text);
+    expect(Buffer.isBuffer(res.body)).toBe(true);
+    expect(res.body.subarray(0, 5).toString()).toBe('%PDF-');
+    expect(res.body.subarray(-20).toString()).toContain('%%EOF');
+    const empty = await request(app).get('/api/v1/reports/leads.pdf?search=never-match-xyz')
+      .set('Authorization', `Bearer ${adminToken}`).expect(200);
+    expect(empty.headers['x-export-row-count']).toBe('0');
+    expect(empty.headers['x-export-has-more']).toBe('false');
+  });
+
+  it('escapes spreadsheet formula prefixes in customer-entered CSV fields', async () => {
+    await request(app).post('/api/v1/leads').set('Authorization', `Bearer ${adminToken}`)
+      .send({ customerName: '=2+3', phone: '+919876000195', source: 'MANUAL' }).expect(201);
+    const res = await request(app).get('/api/v1/reports/leads.csv?search=2%2B3')
+      .set('Authorization', `Bearer ${adminToken}`).expect(200);
+    expect(res.text).toContain("'=2+3");
+    expect(res.headers['x-export-row-count']).toBe('1');
+  });
+
   it('exports leads as CSV', async () => {
     const res = await request(app)
       .get('/api/v1/reports/leads.csv')

@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useRouter } from 'next/navigation';
+import { useQueryClient } from '@tanstack/react-query';
 import { apiFetch, clearTokens, getRefreshToken, hasSession, setTokens } from './api';
 import type { LoginResponse, User } from './types';
 
@@ -26,6 +27,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -40,11 +42,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(data.user);
     } catch {
       clearTokens();
+      queryClient.clear();
       setUser(null);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [queryClient]);
 
   useEffect(() => {
     void refreshUser();
@@ -57,11 +60,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify({ email, password }),
         skipAuthRetry: true,
       });
+      queryClient.clear();
       setTokens(data.accessToken, data.refreshToken);
       setUser(data.user);
       router.replace('/dashboard');
     },
-    [router],
+    [router, queryClient],
   );
 
   const logout = useCallback(async () => {
@@ -77,10 +81,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     } finally {
       clearTokens();
+      queryClient.clear();
       setUser(null);
       router.replace('/login');
     }
-  }, [router]);
+  }, [router, queryClient]);
 
   const value = useMemo(
     () => ({ user, loading, login, logout, refreshUser }),

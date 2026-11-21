@@ -52,6 +52,7 @@ export function createApp(): Express {
         return callback(new Error(`Origin ${origin} is not allowed`));
       },
       credentials: true,
+      exposedHeaders: ['X-Export-Row-Count', 'X-Export-Has-More'],
       maxAge: 86400,
     }),
   );

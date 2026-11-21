@@ -20,6 +20,11 @@ export const exportLeadsQuerySchema = z.object({
   to: z.string().datetime({ offset: true }).optional(),
   /** Hard cap so a single export cannot exhaust memory. */
   limit: z.coerce.number().int().min(1).max(10000).default(5000),
+  offset: z.coerce.number().int().min(0).max(1000000).default(0),
+});
+
+export const exportLeadsPdfQuerySchema = exportLeadsQuerySchema.extend({
+  limit: z.coerce.number().int().min(1).max(500).default(500),
 });
 
 export type SummaryQuery = z.infer<typeof summaryQuerySchema>;
