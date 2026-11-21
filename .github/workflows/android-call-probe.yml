@@ -2,6 +2,11 @@ name: Android call feasibility build
 
 on:
   workflow_dispatch:
+    inputs:
+      sync_origin:
+        description: 'HTTPS origin for isolated testing (optional)'
+        required: false
+        type: string
   push:
     paths:
       - 'apps/android/**'
@@ -31,8 +36,16 @@ jobs:
       - name: Build debug APK
         working-directory: apps/android
         env:
-          CRM_SYNC_ORIGIN: ${{ vars.CRM_SYNC_ORIGIN }}
-        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug :syncapp:testDebugUnitTest :syncapp:assembleDebug
+          CRM_SYNC_ORIGIN: ${{ inputs.sync_origin || vars.CRM_SYNC_ORIGIN }}
+        run: |
+          set +e
+          ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug :syncapp:testDebugUnitTest :syncapp:assembleDebug > gradle-build.log 2>&1
+          status=$?
+          tail -120 gradle-build.log
+          if [ "$status" -ne 0 ]; then
+            tail -80 gradle-build.log | while IFS= read -r line; do echo "::error::$line"; done
+          fi
+          exit "$status"
       - name: Upload test APK
         uses: actions/upload-artifact@v4
         with:
