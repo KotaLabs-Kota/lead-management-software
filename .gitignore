@@ -42,3 +42,8 @@ pgdata/
 # misc
 *.tsbuildinfo
 .cache/
+
+# Android Studio / Gradle local state
+.gradle/
+local.properties
+*.iml
