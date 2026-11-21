@@ -7,6 +7,10 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.text.InputType
+import android.text.method.PasswordTransformationMethod
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import javax.net.ssl.SSLException
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.CheckBox
@@ -54,7 +58,12 @@ class MainActivity : Activity() {
             consent = CheckBox(this).apply { text = "I consent to this call-log access and CRM sync" }
             root.addView(consent)
             email = EditText(this).apply { hint = "CRM email"; inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS; isSingleLine = true }
-            password = EditText(this).apply { hint = "CRM password"; inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD; isSingleLine = true }
+            password = EditText(this).apply {
+                hint = "CRM password"
+                isSingleLine = true
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                transformationMethod = PasswordTransformationMethod.getInstance()
+            }
             root.addView(email); root.addView(password)
             root.addView(button(if (busy) "Registering…" else "Allow and register") { requestRegistration() })
         } else {
@@ -107,10 +116,12 @@ class MainActivity : Activity() {
         executor.execute {
             var refresh: String? = null
             var registered = false
+            var stage = "sign in"
             var outcome = "Registration failed. Check your connection and credentials, then try again."
             try {
                 val login = Api.post("/api/auth/login", JSONObject().put("email", username).put("password", secret))
                 refresh = login.getString("refreshToken")
+                stage = "check server settings"
                 val capability = Api.get("/api/v1/call-sync/capability", login.getString("accessToken"))
                 if (!capability.optBoolean("enabled", false)) {
                     outcome = "Call sync is not enabled on this CRM. Ask your administrator; do not enable it on live data before testing."
@@ -120,8 +131,10 @@ class MainActivity : Activity() {
                 val payload = JSONObject().put("deviceCode", scope.toString()).put("deviceName", "Android ${Build.MODEL}".take(120))
                     .put("manufacturer", Build.MANUFACTURER.take(120)).put("model", Build.MODEL.take(120))
                     .put("androidVersion", Build.VERSION.RELEASE.take(40)).put("appVersion", "0.1.0-test")
+                stage = "register the device"
                 val device = Api.post("/api/v1/devices/register", payload, login.getString("accessToken"))
                 registered = true
+                stage = "save registration"
                 val enrollment = SecureStore.Enrollment(device.getString("deviceToken"), scope, System.currentTimeMillis(), device.getJSONObject("device").getString("id"))
                 synchronized(SyncEngine.lock) {
                     SecureStore(this).save(enrollment)
@@ -129,8 +142,17 @@ class MainActivity : Activity() {
                     Scheduler.manual(this)
                 }
                 outcome = "Registration complete. Only calls started after registration are eligible."
-            } catch (_: Exception) {
-                if (registered) outcome = "Registration could not be saved securely. Ask your administrator to revoke the newly registered device before trying again."
+            } catch (error: Exception) {
+                outcome = when {
+                    registered -> "The server registered the phone, but the app could not finish setup. Ask your administrator to revoke the newly registered device before trying again."
+                    error is Api.HttpError && error.status == 401 && stage == "sign in" -> "Sign-in was rejected. Check the test email and password, then try again."
+                    error is Api.HttpError -> "Could not $stage: server returned HTTP ${error.status}. Check the test server and try again."
+                    error is UnknownHostException -> "Could not find the test server. Check the phone's internet connection and the test server address."
+                    error is SSLException -> "Could not establish a secure connection to the test server. Check the phone's date and time and contact support."
+                    error is SocketTimeoutException -> "Connection timed out while trying to $stage. Check the phone's internet connection and test server."
+                    error is java.io.IOException -> "Could not connect to the test server while trying to $stage. Check the phone's internet connection and try again."
+                    else -> outcome
+                }
             } finally {
                 if (refresh != null) try { Api.post("/api/auth/logout", JSONObject().put("refreshToken", refresh)) } catch (_: Exception) { }
             }
