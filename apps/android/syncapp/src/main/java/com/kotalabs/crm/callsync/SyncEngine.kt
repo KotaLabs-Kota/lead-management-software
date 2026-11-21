@@ -31,7 +31,10 @@ internal object SyncEngine {
         Queue(context, secure).use { queue ->
             val skipped = scan(context, enrollment, queue)
             val count = queue.count("pending")
-            if (count == 0) { status(context, "Up to date. $skipped recent entries could not be identified as eligible SIM calls."); return@synchronized }
+            if (count == 0) {
+                status(context, if (skipped > 0) "No calls queued. $skipped entries were skipped and not sent." else "No calls queued.")
+                return@synchronized
+            }
             val prefs = context.getSharedPreferences("sync_status", Context.MODE_PRIVATE)
             if (System.currentTimeMillis() < prefs.getLong("retryAt", 0)) {
                 status(context, "$count call(s) waiting to retry. $skipped entries skipped.")
