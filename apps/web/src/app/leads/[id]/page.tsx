@@ -10,6 +10,7 @@ import { ApiError, type CallEvent, type Followup, type Lead, type LeadActivity, 
 import { formatDateTime, formatDuration, formatPhone, isoToLocalInput, localInputToIso, timeAgo } from '@/lib/format';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
+import { CallDevice } from '@/components/devices/CallDevice';
 import { Field, Input, Select, Textarea } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { ErrorState, Spinner } from '@/components/ui/States';
@@ -228,7 +229,7 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
               <p className="text-sm text-slate-500">No calls recorded for this lead yet.</p>
             ) : (
               <div className="overflow-x-auto">
-              <table className="w-full min-w-[580px] text-sm">
+              <table className="w-full min-w-[760px] text-sm">
                 <thead>
                   <tr className="text-left text-xs uppercase tracking-wide text-slate-500">
                     <th className="pb-2 font-medium">When</th>
@@ -236,6 +237,7 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
                     <th className="pb-2 font-medium">Source</th>
                     <th className="pb-2 text-right font-medium">Duration</th>
                     <th className="pb-2 pl-4 font-medium">By</th>
+                    <th className="pb-2 pl-4 font-medium">Phone</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -251,6 +253,7 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
                       <td className="py-2 text-slate-700">{call.source}</td>
                       <td className="py-2 text-right">{formatDuration(call.durationSeconds)}</td>
                       <td className="py-2 pl-4 text-slate-700">{call.userName ?? '—'}</td>
+                      <td className="py-2 pl-4 text-slate-700"><CallDevice call={call} /></td>
                     </tr>
                   ))}
                 </tbody>

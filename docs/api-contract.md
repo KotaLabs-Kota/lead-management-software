@@ -75,7 +75,7 @@ Accepts a user JWT **or** a device token.
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | POST | `/` | user or device | Single event or `{events: [...]}` batch (max 500). Per-item results: `created` / `duplicate` / error |
-| GET | `/` | user | List (employees: own calls). Query: `page, pageSize, phone, direction, source, userId, leadId, unmatched, from, to` |
+| GET | `/` | user | List (employees: own calls, or all calls on a lead they can access when `leadId` is supplied). Query: `page, pageSize, phone, direction, source, userId, deviceId, leadId, unmatched, from, to` |
 
 Event fields (camelCase; snake_case aliases also accepted):
 `eventId` (UUID, idempotency key), `phoneNumber`, `direction`
@@ -87,7 +87,7 @@ with offset), `durationSeconds`, `simSlot` (1|2), `notes`, `leadId?`,
 Rules:
 - Duplicate `eventId` → returns the existing row, never a second row.
 - With `CALL_EVENT_AUTO_LINK_LEAD=true`, calls link to the most recent open lead with the same phone number.
-- `CALL_EVENT_AUTO_CREATE_LEAD` defaults to `false`. When explicitly enabled, authenticated device-originated incoming and missed SIM calls create an assigned lead if no open lead matches. Previous visible closed leads produce a “Returning contact” source detail. Manual, WhatsApp, and outgoing calls never auto-create leads. Do not enable until Android sync and real-device testing are complete.
+- `CALL_EVENT_AUTO_CREATE_LEAD` defaults to `false`. When explicitly enabled, authenticated device-originated incoming, outgoing and missed SIM calls create an assigned lead if no open lead matches. Previous visible closed leads produce a “Returning contact” source detail. Manual and WhatsApp calls never auto-create leads. Outgoing calls can include personal numbers, so enrollment requires explicit informed consent. Do not enable until Android sync and real-device testing are complete.
 - Lead details include up to 25 earlier matching leads visible to the requesting user (`previousLeads`).
 - Unavailable fields stay `null` — the server never invents call data.
 

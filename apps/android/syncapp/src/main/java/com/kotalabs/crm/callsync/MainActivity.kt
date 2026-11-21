@@ -53,7 +53,7 @@ class MainActivity : Activity() {
             setContentView(ScrollView(this).apply { addView(root) }); return
         }
         if (enrollment == null) {
-            root.addView(text("With your consent, this app reads your phone's call history after enrollment and sends identifiable incoming and missed SIM call numbers, times, and available durations to your company CRM. No audio is recorded. Calls may be missed if Android, your carrier or phone does not record or identify them. Your company administrator can revoke this device. Local queued calls remain until sent or deleted."))
+            root.addView(text("With your consent, this app reads your phone's call history after enrollment and sends identifiable incoming, outgoing and missed SIM call numbers, times, and available durations to your company CRM. This may include personal calls made on this phone. No audio is recorded. Calls may be missed if Android, your carrier or phone does not record or identify them. Your company administrator can revoke this device. Local queued calls remain until sent or deleted."))
             root.addView(text("On Android 12 or newer, Phone number permission is needed to inspect the call account; the app does not read your own phone number. Only use with your company's permission and a test account. This test build connects to ${BuildConfig.CRM_SYNC_ORIGIN}."))
             consent = CheckBox(this).apply { text = "I consent to this call-log access and CRM sync" }
             root.addView(consent)
@@ -70,6 +70,24 @@ class MainActivity : Activity() {
             val count = try { Queue(this, secure).use { it.count("pending") } } catch (_: Exception) { -1 }
             root.addView(text("Device registered. ID: ${enrollment.deviceId}\nPending calls: ${if (count >= 0) count.toString() else "unavailable"}"))
             root.addView(text(SyncEngine.getStatus(this)))
+            if (enrollment.outgoingSince == null) {
+                root.addView(text("Outgoing SIM calls are not being synced. With your additional consent, outgoing numbers, times and available durations will also be sent to the company CRM. Only calls started after you consent are eligible. This may include personal calls; no audio is recorded."))
+                root.addView(button("Consent to outgoing call sync") {
+                    AlertDialog.Builder(this).setTitle("Sync outgoing calls?")
+                        .setMessage("The CRM will receive identifiable outgoing SIM call numbers, times and available durations, including personal calls made on this phone. Only outgoing calls started after you agree will be synced. No audio is recorded.")
+                        .setNegativeButton("Not now", null).setPositiveButton("I agree") { _, _ ->
+                            try {
+                                synchronized(SyncEngine.lock) {
+                                    val current = secure.load()
+                                    if (current != null && current.deviceId == enrollment.deviceId && current.outgoingSince == null) {
+                                        secure.enableOutgoing(current, System.currentTimeMillis())
+                                    }
+                                }
+                                Scheduler.ensure(this); Scheduler.manual(this); render()
+                            } catch (_: Exception) { message("Could not save consent. Please try again.") }
+                        }.show()
+                })
+            }
             root.addView(text("Android may delay background work. A local check is requested after call-log changes and roughly every five minutes. No request is sent when there are no queued calls. Private numbers and calls without an identifiable SIM account are skipped."))
             val missing = requiredPermissions().filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
             if (missing.isNotEmpty()) root.addView(button("Restore call permissions") { requestPermissions(missing.toTypedArray(), 12) })
@@ -140,7 +158,8 @@ class MainActivity : Activity() {
                 val device = Api.post("/api/v1/devices/register", payload, login.getString("accessToken"))
                 registered = true
                 stage = "save registration"
-                val enrollment = SecureStore.Enrollment(device.getString("deviceToken"), scope, System.currentTimeMillis(), device.getJSONObject("device").getString("id"))
+                val started = System.currentTimeMillis()
+                val enrollment = SecureStore.Enrollment(device.getString("deviceToken"), scope, started, device.getJSONObject("device").getString("id"), started)
                 synchronized(SyncEngine.lock) {
                     SecureStore(this).save(enrollment)
                     Scheduler.ensure(this)

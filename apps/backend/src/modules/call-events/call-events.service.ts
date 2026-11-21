@@ -3,7 +3,7 @@ import { env } from '../../config/env';
 import { many, maybeOne, one, withTransaction } from '../../db/pool';
 import { logger } from '../../lib/logger';
 import { formatLeadNumber } from '../../types/domain';
-import { validationError } from '../../utils/errors';
+import { notFound, validationError } from '../../utils/errors';
 import { buildPageMeta } from '../../utils/http';
 import { normalizePhone } from '../../utils/phone';
 import { callEventSchema, normalizeKeys } from './call-events.schemas';
@@ -80,7 +80,7 @@ interface IngestResult {
  * Lead linking: an explicit `leadId` always wins. Otherwise, when
  * CALL_EVENT_AUTO_LINK_LEAD is enabled, the most recent open lead for the same
  * phone number is linked. If explicitly enabled, device-originated incoming
- * and missed SIM calls also create a lead when no open lead exists.
+ * outgoing and missed SIM calls also create a lead when no open lead exists.
  */
 async function ingestEvent(
   input: SingleCallEventInput,
@@ -120,7 +120,7 @@ async function ingestEvent(
     }
 
     const eligible = Boolean(actor.deviceId) && input.source === 'SIM' &&
-      (input.direction === 'INCOMING' || input.direction === 'MISSED');
+      (input.direction === 'INCOMING' || input.direction === 'OUTGOING' || input.direction === 'MISSED');
     if (!leadId && eligible && env.CALL_EVENT_AUTO_CREATE_LEAD) {
       // Always check for open leads when auto-create is enabled, even if the
       // independent auto-link toggle was turned off.
@@ -146,7 +146,7 @@ async function ingestEvent(
         await client.query(
           `INSERT INTO lead_activities (lead_id, user_id, type, body, metadata)
            VALUES ($1, $2, 'CREATED', $3, $4)`,
-          [leadId, actor.userId, 'Lead created from incoming call', JSON.stringify({ returningContact: Boolean(previous) })],
+          [leadId, actor.userId, `Lead created from ${input.direction.toLowerCase()} call`, JSON.stringify({ returningContact: Boolean(previous) })],
         );
       }
     }
@@ -271,7 +271,7 @@ export async function createCallEvents(req: Request, res: Response): Promise<voi
   });
 }
 
-/** GET /api/v1/call-events — employees see their own calls, admins see all. */
+/** GET /api/v1/call-events — employees see their own calls, or all calls on an accessible lead. */
 export async function listCallEvents(req: Request, res: Response): Promise<void> {
   const query = req.query as unknown as ListCallEventsQuery;
   const conditions: string[] = [];
@@ -282,9 +282,21 @@ export async function listCallEvents(req: Request, res: Response): Promise<void>
   };
 
   if (req.auth!.role !== 'ADMIN') {
-    conditions.push(`ce.user_id = ${push(req.auth!.userId)}`);
+    if (query.leadId) {
+      // Explicit lead history follows the same access rules as the lead detail and timeline.
+      // Never allow a caller to enumerate another employee's assigned lead by ID.
+      const lead = await maybeOne<{ id: string }>(
+        `SELECT id FROM leads WHERE id = $1 AND (assigned_user_id = $2 OR assigned_user_id IS NULL)`,
+        [query.leadId, req.auth!.userId],
+      );
+      if (!lead) throw notFound('Lead');
+      conditions.push(`EXISTS (SELECT 1 FROM leads visible WHERE visible.id = ce.lead_id AND (visible.assigned_user_id = ${push(req.auth!.userId)} OR visible.assigned_user_id IS NULL))`);
+    } else {
+      conditions.push(`ce.user_id = ${push(req.auth!.userId)}`);
+    }
   }
   if (query.userId) conditions.push(`ce.user_id = ${push(query.userId)}`);
+  if (query.deviceId) conditions.push(`ce.device_id = ${push(query.deviceId)}`);
   if (query.leadId) conditions.push(`ce.lead_id = ${push(query.leadId)}`);
   if (query.direction) conditions.push(`ce.direction = ${push(query.direction)}`);
   if (query.source) conditions.push(`ce.source = ${push(query.source)}`);

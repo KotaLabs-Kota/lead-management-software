@@ -64,6 +64,7 @@ export const listCallEventsQuerySchema = z.object({
   direction: z.enum(CALL_DIRECTIONS).optional(),
   source: z.enum(CALL_SOURCES).optional(),
   userId: z.string().uuid().optional(),
+  deviceId: z.string().uuid().optional(),
   leadId: z.string().uuid().optional(),
   unmatched: z.enum(['true', 'false']).optional(),
   from: z.string().datetime({ offset: true }).optional(),

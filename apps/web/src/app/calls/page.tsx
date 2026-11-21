@@ -6,9 +6,10 @@ import { useQuery } from '@tanstack/react-query';
 import { Phone, PhoneIncoming, PhoneMissed, PhoneOutgoing, Unlink } from 'lucide-react';
 import { apiGet, toQuery } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
-import type { CallDirection, CallEvent, CallSource, PageMeta, UserWithCounts } from '@/lib/types';
+import type { CallDirection, CallEvent, CallSource, Device, PageMeta, UserWithCounts } from '@/lib/types';
 import { formatDateTime, formatDuration, formatPhone } from '@/lib/format';
 import { Card } from '@/components/ui/Card';
+import { CallDevice } from '@/components/devices/CallDevice';
 import { Input, Select } from '@/components/ui/Input';
 import { Pagination } from '@/components/ui/Pagination';
 import { EmptyState, ErrorState, Spinner } from '@/components/ui/States';
@@ -37,6 +38,7 @@ export default function CallsPage() {
   const [source, setSource] = useState('');
   const [unmatched, setUnmatched] = useState(false);
   const [assignee, setAssignee] = useState('');
+  const [deviceId, setDeviceId] = useState('');
 
   const users = useQuery({
     queryKey: ['users', 'active'],
@@ -44,8 +46,14 @@ export default function CallsPage() {
     enabled: user?.role === 'ADMIN',
   });
 
+  const devices = useQuery({
+    queryKey: ['devices', 'call-filter'],
+    queryFn: () => apiGet<{ devices: Device[] }>('/api/v1/devices'),
+    enabled: user?.role === 'ADMIN',
+  });
+
   const calls = useQuery({
-    queryKey: ['calls', page, phone, direction, source, unmatched, assignee],
+    queryKey: ['calls', page, phone, direction, source, unmatched, assignee, deviceId],
     queryFn: () =>
       apiGet<{ callEvents: CallEvent[]; page: PageMeta }>(
         `/api/v1/call-events${toQuery({
@@ -56,6 +64,7 @@ export default function CallsPage() {
           source: (source || undefined) as CallSource | undefined,
           unmatched: unmatched ? 'true' : undefined,
           userId: assignee || undefined,
+          deviceId: deviceId || undefined,
         })}`,
       ),
   });
@@ -138,6 +147,18 @@ export default function CallsPage() {
             ))}
           </Select>
         ) : null}
+        {user?.role === 'ADMIN' ? (
+          <Select className="w-64" value={deviceId} aria-label="Filter by phone"
+            onChange={(event) => { setDeviceId(event.target.value); reset(); }}>
+            <option value="">All phones</option>
+            {devices.data?.devices.map((device) => (
+              <option key={device.id} value={device.id}>
+                {device.deviceName ?? 'Unknown device'} · {device.userName} · {device.id.slice(0, 8)}{device.status === 'REVOKED' ? ' (revoked)' : ''}
+              </option>
+            ))}
+          </Select>
+        ) : null}
+        {devices.isError && user?.role === 'ADMIN' ? <span className="text-sm text-red-700">Could not load phone filter.</span> : null}
       </div>
 
       <Card className="p-0">
@@ -182,7 +203,7 @@ export default function CallsPage() {
                     <td className="px-3 py-3 text-slate-700">{call.source}</td>
                     <td className="px-3 py-3 text-right">{formatDuration(call.durationSeconds)}</td>
                     <td className="px-3 py-3 text-slate-700">{call.userName ?? '—'}</td>
-                    <td className="px-3 py-3 text-slate-700">{call.deviceName ?? '—'}</td>
+                    <td className="px-3 py-3 text-slate-700"><CallDevice call={call} /></td>
                     <td className="px-5 py-3">
                       {call.leadId && call.leadCode ? (
                         <Link

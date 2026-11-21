@@ -107,11 +107,13 @@ internal object SyncEngine {
             while (c.moveToNext()) {
                 val direction = when (c.getInt(typeCol)) {
                     CallLog.Calls.INCOMING_TYPE -> "INCOMING"
+                    CallLog.Calls.OUTGOING_TYPE -> "OUTGOING"
                     CallLog.Calls.MISSED_TYPE -> "MISSED"
                     else -> continue
                 }
                 val started = c.getLong(dateCol)
                 if (started <= 0) { skipped++; continue }
+                if (direction == "OUTGOING" && !SyncPolicy.outgoingAllowed(started, enrollment.outgoingSince)) continue
                 val id = SyncPolicy.eventId(enrollment.scope, c.getLong(idCol), started).toString()
                 if (queue.contains(id)) continue
                 val component = if (c.isNull(componentCol)) null else ComponentName.unflattenFromString(c.getString(componentCol))

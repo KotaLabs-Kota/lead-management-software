@@ -21,6 +21,13 @@ class SyncPolicyTest {
         assertThrows(IllegalArgumentException::class.java) { SyncPolicy.eventId(device, 1, 0) }
     }
 
+    @Test fun outgoingCallsRequireConsentAndAreNotBackfilled() {
+        assertFalse(SyncPolicy.outgoingAllowed(1000L, null))
+        assertFalse(SyncPolicy.outgoingAllowed(999L, 1000L))
+        assertTrue(SyncPolicy.outgoingAllowed(1000L, 1000L))
+        assertTrue(SyncPolicy.outgoingAllowed(1001L, 1000L))
+    }
+
     @Test fun noPendingCallsMeansNoRequestAndBatchesAreBounded() {
         assertTrue(SyncPolicy.nextBatch(emptyList()).isEmpty())
         val calls = List(120) { UUID.randomUUID() }

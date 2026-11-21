@@ -147,7 +147,7 @@ class MainActivity : Activity() {
                 val date = if (it.isNull(dateCol) || it.getLong(dateCol) <= 0) "Time unavailable" else formatter.format(Date(it.getLong(dateCol)))
                 val duration = if (it.isNull(durationCol)) "Duration unavailable" else "${it.getLong(durationCol)} seconds"
                 val callType = if (it.isNull(typeCol)) -1 else it.getInt(typeCol)
-                val eligibility = if (callType == CallLog.Calls.INCOMING_TYPE || callType == CallLog.Calls.MISSED_TYPE) {
+                val eligibility = if (callType == CallLog.Calls.INCOMING_TYPE || callType == CallLog.Calls.OUTGOING_TYPE || callType == CallLog.Calls.MISSED_TYPE) {
                     val component = if (it.isNull(componentCol)) null else ComponentName.unflattenFromString(it.getString(componentCol))
                     val accountId = if (it.isNull(accountCol)) null else it.getString(accountCol)
                     var accountPermissionDenied = false
@@ -164,11 +164,11 @@ class MainActivity : Activity() {
                         number.isNullOrBlank() || number.trim().length > 30 || number.count { digit -> digit.isDigit() } < 7 -> "Caller number missing or too short"
                         else -> "Passed local eligibility checks"
                     }.also { reason -> reasons[reason] = (reasons[reason] ?: 0) + 1 }
-                } else "Not an incoming or missed call"
+                } else "Not an incoming, outgoing or missed call"
                 entries.add("$type  ·  ${maskNumber(number)}\n$date  ·  $duration\n$eligibility")
             }
         }
-        val summary = if (reasons.isEmpty()) "No incoming or missed entries in the latest 50 calls."
+        val summary = if (reasons.isEmpty()) "No incoming, outgoing or missed entries in the latest 50 calls."
             else reasons.entries.joinToString("\n") { (reason, count) -> "$reason: $count" }
         return "Local eligibility summary (latest 50; may include older calls):\n$summary\n\n" +
             if (entries.isEmpty()) "No calls found in this phone's history." else entries.joinToString("\n\n")

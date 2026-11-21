@@ -16,7 +16,7 @@ import javax.crypto.spec.GCMParameterSpec
 internal class SecureStore(context: Context) {
     private val prefs = context.applicationContext.getSharedPreferences("sync", Context.MODE_PRIVATE)
     private val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-    data class Enrollment(val token: String, val scope: UUID, val started: Long, val deviceId: String)
+    data class Enrollment(val token: String, val scope: UUID, val started: Long, val deviceId: String, val outgoingSince: Long? = null)
 
     @Synchronized private fun key(create: Boolean): SecretKey {
         val key = keyStore.getKey(KEY, null) as? SecretKey
@@ -42,13 +42,21 @@ internal class SecureStore(context: Context) {
     fun save(e: Enrollment) {
         require(e.token.startsWith("dvc_") && e.started > 0)
         val value = JSONObject().put("token", e.token).put("scope", e.scope.toString())
-            .put("started", e.started).put("deviceId", e.deviceId)
+            .put("started", e.started).put("deviceId", e.deviceId).put("outgoingSince", e.outgoingSince ?: JSONObject.NULL)
         check(prefs.edit().putString("enrollment", encrypt(value.toString())).putBoolean("blocked", false).commit())
     }
     fun load(): Enrollment? {
         val s = prefs.getString("enrollment", null) ?: return null
         val o = JSONObject(decrypt(s))
-        return Enrollment(o.getString("token"), UUID.fromString(o.getString("scope")), o.getLong("started"), o.getString("deviceId"))
+        return Enrollment(o.getString("token"), UUID.fromString(o.getString("scope")), o.getLong("started"), o.getString("deviceId"),
+            if (o.isNull("outgoingSince")) null else o.getLong("outgoingSince"))
+    }
+    // Called under SyncEngine.lock. Do not reset the blocked flag during consent.
+    fun enableOutgoing(e: Enrollment, since: Long) {
+        require(since > 0 && e.outgoingSince == null)
+        val value = JSONObject().put("token", e.token).put("scope", e.scope.toString())
+            .put("started", e.started).put("deviceId", e.deviceId).put("outgoingSince", since)
+        check(prefs.edit().putString("enrollment", encrypt(value.toString())).commit())
     }
     fun isBlocked() = prefs.getBoolean("blocked", false)
     fun block() { check(prefs.edit().putBoolean("blocked", true).commit()) }

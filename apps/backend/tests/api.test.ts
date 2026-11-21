@@ -453,11 +453,11 @@ describe('call events', () => {
     }
   });
 
-  it('opt-in does not auto-create leads for manual or outgoing calls', async () => {
+  it('opt-in does not auto-create leads for manual or WhatsApp calls', async () => {
     env.CALL_EVENT_AUTO_CREATE_LEAD = true;
     try {
       for (const [token, direction, source] of [
-        [employeeToken, 'MISSED', 'SIM'], [deviceToken, 'OUTGOING', 'SIM'],
+        [employeeToken, 'MISSED', 'SIM'],
         [deviceToken, 'MISSED', 'WHATSAPP'],
       ]) {
         const res = await request(app).post('/api/v1/call-events')
@@ -469,6 +469,75 @@ describe('call events', () => {
     } finally {
       env.CALL_EVENT_AUTO_CREATE_LEAD = false;
     }
+  });
+
+  it('creates, links and deduplicates outgoing SIM calls and scopes reassigned lead history', async () => {
+    env.CALL_EVENT_AUTO_CREATE_LEAD = true;
+    try {
+      const event = { eventId: randomUUID(), phoneNumber: '+919876000127', direction: 'OUTGOING',
+        startedAt: '2026-11-21T14:00:00+05:30', source: 'SIM', captureMethod: 'CALL_LOG' };
+      const first = await request(app).post('/api/v1/call-sync/events')
+        .set('Authorization', `Bearer ${deviceToken}`).send(event).expect(201);
+      const outgoingLeadId = first.body.results[0].callEvent.leadId;
+      expect(outgoingLeadId).toBeTruthy();
+      expect(first.body.results[0].callEvent.direction).toBe('OUTGOING');
+      const retry = await request(app).post('/api/v1/call-sync/events')
+        .set('Authorization', `Bearer ${deviceToken}`).send(event).expect(201);
+      expect(retry.body.summary.duplicates).toBe(1);
+      const next = await request(app).post('/api/v1/call-sync/events')
+        .set('Authorization', `Bearer ${deviceToken}`).send({ ...event, eventId: randomUUID() }).expect(201);
+      expect(next.body.results[0].callEvent.leadId).toBe(outgoingLeadId);
+      const adminHistory = await request(app).get(`/api/v1/call-events?leadId=${outgoingLeadId}`)
+        .set('Authorization', `Bearer ${adminToken}`).expect(200);
+      expect(adminHistory.body.callEvents).toHaveLength(2);
+      expect(adminHistory.body.callEvents[0].deviceName).toBeTruthy();
+      const devId = adminHistory.body.callEvents[0].deviceId;
+      const filtered = await request(app).get(`/api/v1/call-events?deviceId=${devId}&direction=OUTGOING`)
+        .set('Authorization', `Bearer ${adminToken}`).expect(200);
+      expect(filtered.body.callEvents.some((event: {leadId: string}) => event.leadId === outgoingLeadId)).toBe(true);
+      const otherDevice = await request(app).get(`/api/v1/call-events?deviceId=${randomUUID()}&leadId=${outgoingLeadId}`)
+        .set('Authorization', `Bearer ${adminToken}`).expect(200);
+      expect(otherDevice.body.callEvents).toHaveLength(0);
+      await request(app).get(`/api/v1/call-events?leadId=${outgoingLeadId}`)
+        .set('Authorization', `Bearer ${employee2Token}`).expect(404);
+      await request(app).patch(`/api/v1/leads/${outgoingLeadId}`)
+        .set('Authorization', `Bearer ${adminToken}`).send({ assignedUserId: employee2Id }).expect(200);
+      const assignedHistory = await request(app).get(`/api/v1/call-events?leadId=${outgoingLeadId}`)
+        .set('Authorization', `Bearer ${employee2Token}`).expect(200);
+      expect(assignedHistory.body.callEvents).toHaveLength(2);
+      await request(app).get(`/api/v1/call-events?leadId=${outgoingLeadId}`)
+        .set('Authorization', `Bearer ${employeeToken}`).expect(404);
+      await request(app).patch(`/api/v1/leads/${outgoingLeadId}`)
+        .set('Authorization', `Bearer ${employee2Token}`).send({ status: 'CONTACTED' }).expect(200);
+      await request(app).patch(`/api/v1/leads/${outgoingLeadId}`)
+        .set('Authorization', `Bearer ${adminToken}`).send({ status: 'CONVERTED' }).expect(200);
+      const returning = await request(app).post('/api/v1/call-sync/events')
+        .set('Authorization', `Bearer ${deviceToken}`).send({ ...event, eventId: randomUUID() }).expect(201);
+      expect(returning.body.results[0].callEvent.leadId).not.toBe(outgoingLeadId);
+      // The previous lead belongs to a different employee; its history stays private.
+      const detail = await request(app).get(`/api/v1/leads/${returning.body.results[0].callEvent.leadId}`)
+        .set('Authorization', `Bearer ${employeeToken}`).expect(200);
+      expect(detail.body.previousLeads).toHaveLength(0);
+    } finally { env.CALL_EVENT_AUTO_CREATE_LEAD = false; }
+  });
+
+  it('marks an outgoing call to a visible closed lead as a returning contact', async () => {
+    env.CALL_EVENT_AUTO_CREATE_LEAD = true;
+    try {
+      const event = { eventId: randomUUID(), phoneNumber: '+919876000197', direction: 'OUTGOING',
+        startedAt: '2026-11-21T14:00:00+05:30', source: 'SIM' };
+      const first = await request(app).post('/api/v1/call-sync/events')
+        .set('Authorization', `Bearer ${deviceToken}`).send(event).expect(201);
+      const oldId = first.body.results[0].callEvent.leadId;
+      await request(app).patch(`/api/v1/leads/${oldId}`)
+        .set('Authorization', `Bearer ${adminToken}`).send({ status: 'CONVERTED' }).expect(200);
+      const second = await request(app).post('/api/v1/call-sync/events')
+        .set('Authorization', `Bearer ${deviceToken}`).send({ ...event, eventId: randomUUID() }).expect(201);
+      const detail = await request(app).get(`/api/v1/leads/${second.body.results[0].callEvent.leadId}`)
+        .set('Authorization', `Bearer ${employeeToken}`).expect(200);
+      expect(detail.body.lead.sourceDetail).toBe('Returning contact');
+      expect(detail.body.previousLeads.map((lead: {id: string}) => lead.id)).toContain(oldId);
+    } finally { env.CALL_EVENT_AUTO_CREATE_LEAD = false; }
   });
 
   it('serializes concurrent manual creation and phone sync for the same number', async () => {

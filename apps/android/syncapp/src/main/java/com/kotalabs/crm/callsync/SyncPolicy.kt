@@ -22,6 +22,10 @@ internal object SyncPolicy {
         return UUID.nameUUIDFromBytes(name.toByteArray(StandardCharsets.UTF_8))
     }
 
+    /** Previously enrolled devices require fresh consent; never backfill outgoing calls. */
+    fun outgoingAllowed(startedAtMillis: Long, outgoingSince: Long?): Boolean =
+        outgoingSince != null && startedAtMillis >= outgoingSince
+
     /** Select only pending items; an empty list means no HTTP request at all. */
     fun nextBatch(pending: List<UUID>): List<UUID> = pending.distinct().take(MAX_BATCH_SIZE)
 
