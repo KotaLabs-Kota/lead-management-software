@@ -2,14 +2,14 @@
 
 A separate experimental sync app now exists under [`syncapp/`](syncapp/README.md). This page describes the original probe only.
 
-This is **not** the CRM sync app. It is an opt-in, foreground-only diagnostic for real Android phones (Android 8 / API 26 or newer). It reads at most the 50 most recent entries from the phone's call log when the tester taps Refresh, and shows their type, local time, duration and masked number. It does not upload anything, create leads, record audio, continuously track calls, or write call history to its own storage. It cannot access a call the phone did not receive or record. WhatsApp call capture is not supported.
+This is **not** the CRM sync app. It is an opt-in, foreground-only diagnostic for real Android phones (Android 8 / API 26 or newer). It reads at most the 50 most recent entries from the phone's call log when the tester taps Refresh, and shows their type, local time, duration, masked number, and local eligibility reason. It also asks for Phone permission to inspect whether Android identifies each account as a SIM. It does not upload anything, create leads, record audio, continuously track calls, or write call history to its own storage. It cannot access a call the phone did not receive or record. WhatsApp call capture is not supported.
 
 ## Build and install
 
 1. Install Android Studio with JDK 17, Android SDK Platform 35 and Android SDK Build Tools. Open **`apps/android`** as a project (not the repository root). Let Gradle sync; the first sync downloads Gradle and Android dependencies.
 2. Connect an Android phone with USB debugging enabled and select it in Android Studio, or use **Build > Build APK(s)** to create `app/build/outputs/apk/debug/app-debug.apk`. Install only on a phone whose owner has consented to this test.
-3. Open **CRM Call Test**, tap **Allow access and refresh calls**, and explicitly allow call log access. Android Settings can be used to revoke it at any time. Numbers on screen are masked; don't share call details or screenshots without consent.
-4. If the button is denied permanently, enable Call logs under Android Settings > Apps > CRM Call Test > Permissions. The app has no internet permission.
+3. Open **CRM Call Test**, tap **Allow access and refresh calls**, and explicitly allow Call logs and Phone access. Android Settings can be used to revoke it at any time. Numbers on screen are masked; don't share call details or screenshots without consent.
+4. If the button is denied permanently, enable Call logs and Phone under Android Settings > Apps > CRM Call Test > Permissions. The app has no internet permission.
 
 Build from a terminal in this directory: `./gradlew :app:assembleDebug` (on Windows: `gradlew.bat :app:assembleDebug`). The project needs network access to Google's Android Maven and the Gradle distribution service. No keystore or release signing is configured.
 

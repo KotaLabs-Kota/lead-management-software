@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Sensitive: requested only after the tester explicitly taps the button. -->
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <!-- Used only to check whether Android identifies a call account as a SIM. -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <application
         android:allowBackup="false"
         android:label="CRM Call Test"

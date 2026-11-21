@@ -2,7 +2,11 @@ package com.kotalabs.crm.callprobe
 
 import android.Manifest
 import android.app.Activity
+import android.content.ComponentName
 import android.content.pm.PackageManager
+import android.telecom.PhoneAccount
+import android.telecom.PhoneAccountHandle
+import android.telecom.TelecomManager
 import android.os.Bundle
 import android.provider.CallLog
 import android.view.Gravity
@@ -37,6 +41,7 @@ class MainActivity : Activity() {
         page.addView(label("CRM Call Test", 24f))
         page.addView(label(
             "Feasibility test only. Reads the 50 most recent calls when you tap the button. " +
+                "Call logs and Phone permissions let the app check call entries and whether Android identifies their account as a SIM. " +
                 "Numbers are masked. Nothing is uploaded, recorded, or saved by this app.", 16f
         ))
         refresh = Button(this).apply {
@@ -55,19 +60,22 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         // Permissions can be revoked in Settings while the app is backgrounded.
-        if (checkSelfPermission(Manifest.permission.READ_CALL_LOG) != PackageManager.PERMISSION_GRANTED) {
+        if (!hasPermissions()) {
             queryGeneration++
             if (::results.isInitialized) results.text = "No calls loaded."
             if (::refresh.isInitialized) refresh.isEnabled = true
-            if (::status.isInitialized) status.text = "Call history permission is required. Tap the button to request it."
+            if (::status.isInitialized) status.text = "Call logs and Phone permissions are required. Tap the button to request them."
         }
     }
 
+    private fun hasPermissions() = listOf(Manifest.permission.READ_CALL_LOG, Manifest.permission.READ_PHONE_STATE)
+        .all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
+
     private fun requestOrRefresh() {
-        if (checkSelfPermission(Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED) {
+        if (hasPermissions()) {
             loadCalls()
         } else {
-            requestPermissions(arrayOf(Manifest.permission.READ_CALL_LOG), CALL_LOG_REQUEST)
+            requestPermissions(arrayOf(Manifest.permission.READ_CALL_LOG, Manifest.permission.READ_PHONE_STATE), CALL_LOG_REQUEST)
         }
     }
 
@@ -75,11 +83,11 @@ class MainActivity : Activity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode != CALL_LOG_REQUEST) return
-        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+        if (hasPermissions()) {
             loadCalls()
         } else {
             results.text = "No calls loaded."
-            status.text = "Permission denied. To try again, use the button or enable Call logs in Android Settings → Apps → CRM Call Test → Permissions."
+            status.text = "Permission denied. Enable Call logs and Phone under Android Settings → Apps → CRM Call Test → Permissions."
         }
     }
 
@@ -99,7 +107,7 @@ class MainActivity : Activity() {
             runOnUiThread {
                 if (isFinishing || isDestroyed || generation != queryGeneration) return@runOnUiThread
                 refresh.isEnabled = true
-                if (checkSelfPermission(Manifest.permission.READ_CALL_LOG) != PackageManager.PERMISSION_GRANTED) {
+                if (!hasPermissions()) {
                     results.text = "No calls loaded."
                     status.text = "Call history permission is no longer granted."
                 } else {
@@ -111,25 +119,51 @@ class MainActivity : Activity() {
     }
 
     private fun readRecentCalls(): String {
-        val fields = arrayOf(CallLog.Calls.NUMBER, CallLog.Calls.TYPE, CallLog.Calls.DATE, CallLog.Calls.DURATION)
+        val fields = arrayOf(CallLog.Calls.NUMBER, CallLog.Calls.TYPE, CallLog.Calls.DATE, CallLog.Calls.DURATION,
+            CallLog.Calls.NUMBER_PRESENTATION, CallLog.Calls.PHONE_ACCOUNT_COMPONENT_NAME, CallLog.Calls.PHONE_ACCOUNT_ID)
         val cursor = contentResolver.query(CallLog.Calls.CONTENT_URI, fields, null, null, "${CallLog.Calls.DATE} DESC")
             ?: return "Call history is unavailable on this phone."
         val entries = mutableListOf<String>()
+        val reasons = linkedMapOf<String, Int>()
+        val telecom = getSystemService(TelecomManager::class.java)
         cursor.use {
             val numberCol = it.getColumnIndexOrThrow(CallLog.Calls.NUMBER)
             val typeCol = it.getColumnIndexOrThrow(CallLog.Calls.TYPE)
             val dateCol = it.getColumnIndexOrThrow(CallLog.Calls.DATE)
             val durationCol = it.getColumnIndexOrThrow(CallLog.Calls.DURATION)
+            val presentationCol = it.getColumnIndexOrThrow(CallLog.Calls.NUMBER_PRESENTATION)
+            val componentCol = it.getColumnIndexOrThrow(CallLog.Calls.PHONE_ACCOUNT_COMPONENT_NAME)
+            val accountCol = it.getColumnIndexOrThrow(CallLog.Calls.PHONE_ACCOUNT_ID)
             val formatter = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
             while (entries.size < 50 && it.moveToNext()) {
                 val number = if (it.isNull(numberCol)) null else it.getString(numberCol)
                 val type = if (it.isNull(typeCol)) "Unknown" else describeType(it.getInt(typeCol))
                 val date = if (it.isNull(dateCol) || it.getLong(dateCol) <= 0) "Time unavailable" else formatter.format(Date(it.getLong(dateCol)))
                 val duration = if (it.isNull(durationCol)) "Duration unavailable" else "${it.getLong(durationCol)} seconds"
-                entries.add("$type  ·  ${maskNumber(number)}\n$date  ·  $duration")
+                val callType = if (it.isNull(typeCol)) -1 else it.getInt(typeCol)
+                val eligibility = if (callType == CallLog.Calls.INCOMING_TYPE || callType == CallLog.Calls.MISSED_TYPE) {
+                    val component = if (it.isNull(componentCol)) null else ComponentName.unflattenFromString(it.getString(componentCol))
+                    val accountId = if (it.isNull(accountCol)) null else it.getString(accountCol)
+                    val account = if (component != null && accountId != null) try {
+                        telecom?.getPhoneAccount(PhoneAccountHandle(component, accountId))
+                    } catch (_: SecurityException) { null } else null
+                    when {
+                        it.isNull(dateCol) || it.getLong(dateCol) <= 0 -> "Time missing"
+                        component == null || accountId == null -> "Phone account ID missing"
+                        account == null -> "Phone account unavailable to app"
+                        !account.hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION) -> "Account not identified as SIM"
+                        it.isNull(presentationCol) || it.getInt(presentationCol) != CallLog.Calls.PRESENTATION_ALLOWED -> "Caller presentation unavailable or restricted"
+                        number.isNullOrBlank() || number.trim().length > 30 || number.count { digit -> digit.isDigit() } < 7 -> "Caller number missing or too short"
+                        else -> "Passed local eligibility checks"
+                    }.also { reason -> reasons[reason] = (reasons[reason] ?: 0) + 1 }
+                } else "Not an incoming or missed call"
+                entries.add("$type  ·  ${maskNumber(number)}\n$date  ·  $duration\n$eligibility")
             }
         }
-        return if (entries.isEmpty()) "No calls found in this phone's history." else entries.joinToString("\n\n")
+        val summary = if (reasons.isEmpty()) "No incoming or missed entries in the latest 50 calls."
+            else reasons.entries.joinToString("\n") { (reason, count) -> "$reason: $count" }
+        return "Local eligibility summary (latest 50; may include older calls):\n$summary\n\n" +
+            if (entries.isEmpty()) "No calls found in this phone's history." else entries.joinToString("\n\n")
     }
 
     private fun describeType(type: Int): String = when (type) {
