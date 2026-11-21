@@ -504,6 +504,43 @@ describe('call events', () => {
     expect(res.body.summary.created).toBe(0);
   });
 
+  it('gates the new sync client when automatic creation is disabled', async () => {
+    const payload = { eventId: randomUUID(), phoneNumber: '+919876000127', direction: 'MISSED', source: 'SIM', startedAt: '2026-11-21T14:00:00+05:30' };
+    const capability = await request(app).get('/api/v1/call-sync/capability').set('Authorization', `Bearer ${employeeToken}`).expect(200);
+    expect(capability.body.enabled).toBe(false);
+    await request(app).get('/api/v1/call-sync/capability').expect(401);
+    await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${deviceToken}`).send(payload).expect(503);
+    env.CALL_EVENT_AUTO_CREATE_LEAD = true;
+    try {
+      const active = await request(app).get('/api/v1/call-sync/capability').set('Authorization', `Bearer ${employeeToken}`).expect(200);
+      expect(active.body.enabled).toBe(true);
+      await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${employeeToken}`).send(payload).expect(401);
+      const accepted = await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${deviceToken}`).send(payload).expect(201);
+      expect(accepted.body.results[0].callEvent.leadId).toBeTruthy();
+    } finally { env.CALL_EVENT_AUTO_CREATE_LEAD = false; }
+  });
+
+  it('allows a device token to revoke only that device', async () => {
+    const registration = await request(app).post('/api/v1/devices/register')
+      .set('Authorization', `Bearer ${employeeToken}`)
+      .send({ deviceName: 'Self revoke phone', deviceCode: randomUUID() }).expect(201);
+    const ownToken = registration.body.deviceToken as string;
+    await request(app).post('/api/v1/devices/self/revoke').expect(401);
+    await request(app).post('/api/v1/devices/self/revoke')
+      .set('Authorization', `Bearer ${employeeToken}`).expect(401);
+    await request(app).post('/api/v1/devices/self/revoke')
+      .set('Authorization', `Bearer ${ownToken}`).expect(204);
+    await request(app).post('/api/v1/call-events')
+      .set('Authorization', `Bearer ${ownToken}`)
+      .send({ eventId: randomUUID(), phoneNumber: '+919876543210', direction: 'MISSED', source: 'SIM',
+        startedAt: '2026-11-21T14:00:00+05:30' }).expect(401);
+    const stillActive = await request(app).post('/api/v1/call-events')
+      .set('Authorization', `Bearer ${deviceToken}`)
+      .send({ eventId: randomUUID(), phoneNumber: '+919876543210', direction: 'MISSED', source: 'SIM',
+        startedAt: '2026-11-21T14:00:00+05:30' }).expect(201);
+    expect(stillActive.body.summary.created).toBe(1);
+  });
+
   it('revoked device token is rejected', async () => {
     await request(app)
       .post(`/api/v1/devices/${deviceId}/revoke`)

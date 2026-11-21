@@ -13,4 +13,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "KotaLabsCallProbe"
-include(":app")
+include(":app", ":syncapp")

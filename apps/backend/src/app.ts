@@ -10,6 +10,7 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { apiRateLimiter } from './middleware/rateLimit';
 import { authRouter } from './modules/auth/auth.routes';
 import { callEventsRouter } from './modules/call-events/call-events.routes';
+import { callSyncRouter } from './modules/call-sync/call-sync.routes';
 import { devicesRouter } from './modules/devices/devices.routes';
 import { followupsRouter } from './modules/followups/followups.routes';
 import { leadsRouter } from './modules/leads/leads.routes';
@@ -78,6 +79,7 @@ export function createApp(): Express {
   app.use('/api/v1/devices', devicesRouter);
   app.use('/api/v1/leads', leadsRouter);
   app.use('/api/v1/call-events', callEventsRouter);
+  app.use('/api/v1/call-sync', callSyncRouter);
   app.use('/api/v1/followups', followupsRouter);
   app.use('/api/v1/reports', reportsRouter);
 

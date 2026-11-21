@@ -159,3 +159,13 @@ export async function revokeDevice(req: Request, res: Response): Promise<void> {
   logger.warn({ deviceId: id, userId: updated.user_id }, 'Device revoked by admin');
   res.status(200).json({ device: publicDevice(updated) });
 }
+
+/** Device can revoke its own credential before removing its local data. */
+export async function revokeOwnDevice(req: Request, res: Response): Promise<void> {
+  await maybeOne(
+    `UPDATE devices SET status = 'REVOKED', revoked_at = now()
+      WHERE id = $1 AND user_id = $2 AND status = 'ACTIVE'`,
+    [req.device!.deviceId, req.device!.userId],
+  );
+  res.status(204).send();
+}
