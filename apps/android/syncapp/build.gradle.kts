@@ -1,3 +1,5 @@
+import java.net.URI
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -5,7 +7,7 @@ plugins {
 
 val syncOrigin = providers.environmentVariable("CRM_SYNC_ORIGIN").orNull?.trim()?.takeIf { it.isNotEmpty() }
     ?: "https://lead-management-software-eight.vercel.app"
-val originUri = java.net.URI(syncOrigin)
+val originUri = URI(syncOrigin)
 require(originUri.scheme == "https" && !originUri.host.isNullOrBlank() && originUri.userInfo == null &&
     originUri.rawQuery == null && originUri.rawFragment == null && originUri.path.isNullOrEmpty()) {
     "CRM_SYNC_ORIGIN must be an HTTPS origin without credentials, path, query, or fragment"
