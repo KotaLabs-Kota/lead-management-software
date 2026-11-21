@@ -1,0 +1,22 @@
+{
+  "name": "kotalabs-crm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "KotaLabs CRM & Lead Management System for Multani Motor Body Makers",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @kotalabs/backend",
+    "build": "npm run build --workspace @kotalabs/backend",
+    "start": "npm run start --workspace @kotalabs/backend",
+    "test": "npm run test --workspace @kotalabs/backend",
+    "typecheck": "npm run typecheck --workspace @kotalabs/backend",
+    "db:migrate": "npm run db:migrate --workspace @kotalabs/backend",
+    "db:seed": "npm run db:seed --workspace @kotalabs/backend"
+  },
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "license": "UNLICENSED"
+}
