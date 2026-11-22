@@ -807,3 +807,90 @@ describe('reports', () => {
     expect(res.text).toContain('Ramesh Kumar');
   });
 });
+
+describe('password change notifications', () => {
+  let subjectId: string;
+  let subjectToken: string;
+  let otherAdminToken: string;
+  const auth = (token: string) => `Bearer ${token}`;
+  beforeAll(async () => {
+    env.PASSWORD_CHANGE_NOTIFICATIONS_ENABLED = true;
+    const subject = await request(app).post('/api/v1/users').set('Authorization', auth(adminToken))
+      .send({ name: 'Notification Employee', email: 'notification@test.local', password: 'OldPassword123!', role: 'EMPLOYEE' }).expect(201);
+    subjectId = subject.body.user.id;
+    subjectToken = await login('notification@test.local', 'OldPassword123!');
+    await request(app).post('/api/v1/users').set('Authorization', auth(adminToken))
+      .send({ name: 'Second Admin', email: 'secondadmin@test.local', password: 'SecondAdmin123!', role: 'ADMIN' }).expect(201);
+    otherAdminToken = await login('secondadmin@test.local', 'SecondAdmin123!');
+  });
+  afterAll(() => { env.PASSWORD_CHANGE_NOTIFICATIONS_ENABLED = false; });
+
+  it('denies employees and unauthenticated users and records only successful changes', async () => {
+    await request(app).get('/api/v1/notifications').expect(401);
+    await request(app).get('/api/v1/notifications').set('Authorization', auth(subjectToken)).expect(403);
+    await request(app).post('/api/auth/change-password').set('Authorization', auth(subjectToken))
+      .send({ currentPassword: 'wrong', newPassword: 'NewPassword123!' }).expect(401);
+    let result = await request(app).get('/api/v1/notifications').set('Authorization', auth(adminToken)).expect(200);
+    expect(result.body.unreadCount).toBe(0);
+    await request(app).post('/api/auth/change-password').set('Authorization', auth(subjectToken))
+      .send({ currentPassword: 'OldPassword123!', newPassword: 'NewPassword123!' }).expect(204);
+    result = await request(app).get('/api/v1/notifications').set('Authorization', auth(adminToken)).expect(200);
+    expect(result.body.unreadCount).toBe(1);
+    expect(result.body.notifications[0]).toMatchObject({ subjectName: 'Notification Employee', actorName: 'Notification Employee', kind: 'SELF_CHANGE', read: false });
+    expect(JSON.stringify(result.body)).not.toMatch(/OldPassword123|NewPassword123|password_hash/i);
+  });
+
+  it('records admin resets and maintains independent read status', async () => {
+    await request(app).patch(`/api/v1/users/${subjectId}`).set('Authorization', auth(adminToken))
+      .send({ password: 'ResetPassword123!' }).expect(200);
+    const list = await request(app).get('/api/v1/notifications').set('Authorization', auth(adminToken)).expect(200);
+    expect(list.body.unreadCount).toBe(2);
+    const reset = list.body.notifications.find((n: { kind: string }) => n.kind === 'ADMIN_RESET');
+    expect(reset).toMatchObject({ subjectName: 'Notification Employee', actorName: 'Test Admin', read: false });
+    expect(JSON.stringify(list.body)).not.toContain('ResetPassword123');
+    await request(app).post(`/api/v1/notifications/${reset.id}/read`).set('Authorization', auth(subjectToken)).expect(403);
+    await request(app).post(`/api/v1/notifications/${reset.id}/read`).set('Authorization', auth(adminToken)).expect(204);
+    await request(app).post(`/api/v1/notifications/${reset.id}/read`).set('Authorization', auth(adminToken)).expect(204);
+    const first = await request(app).get('/api/v1/notifications').set('Authorization', auth(adminToken)).expect(200);
+    const second = await request(app).get('/api/v1/notifications').set('Authorization', auth(otherAdminToken)).expect(200);
+    expect(first.body.unreadCount).toBe(1);
+    expect(second.body.unreadCount).toBe(2);
+    expect(second.body.notifications.find((n: { id: string }) => n.id === reset.id).read).toBe(false);
+    await request(app).post(`/api/v1/notifications/${randomUUID()}/read`).set('Authorization', auth(adminToken)).expect(404);
+    await request(app).get('/api/v1/notifications?page=0').set('Authorization', auth(adminToken)).expect(422);
+  });
+
+  it('records admin self changes and provides bounded pages', async () => {
+    await request(app).post('/api/auth/change-password').set('Authorization', auth(otherAdminToken))
+      .send({ currentPassword: 'SecondAdmin123!', newPassword: 'UpdatedAdmin123!' }).expect(204);
+    const { pool } = await import('../src/db/pool');
+    await pool.query(`INSERT INTO password_change_notifications (subject_user_id, actor_user_id, kind)
+      SELECT $1, $1, 'SELF_CHANGE' FROM generate_series(1, 20)`, [subjectId]);
+    const first = await request(app).get('/api/v1/notifications?page=1').set('Authorization', auth(adminToken)).expect(200);
+    const second = await request(app).get('/api/v1/notifications?page=2').set('Authorization', auth(adminToken)).expect(200);
+    expect(first.body.notifications).toHaveLength(20);
+    expect(first.body.hasMore).toBe(true);
+    expect(second.body.notifications).toHaveLength(3);
+    const all = [...first.body.notifications, ...second.body.notifications];
+    expect(all.some((n: { subjectName: string; kind: string }) => n.subjectName === 'Second Admin' && n.kind === 'SELF_CHANGE')).toBe(true);
+    expect(new Set(all.map((n: { id: string }) => n.id)).size).toBe(23);
+  });
+
+  it('rolls password changes back if notification storage fails', async () => {
+    const { pool } = await import('../src/db/pool');
+    await pool.query(`CREATE FUNCTION reject_notification() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'test failure'; END; $$ LANGUAGE plpgsql`);
+    await pool.query(`CREATE TRIGGER reject_notification BEFORE INSERT ON password_change_notifications FOR EACH ROW EXECUTE FUNCTION reject_notification()`);
+    try {
+      await request(app).patch(`/api/v1/users/${subjectId}`).set('Authorization', auth(adminToken))
+        .send({ password: 'ShouldNotWork123!' }).expect(500);
+      const resetToken = await login('notification@test.local', 'ResetPassword123!');
+      await request(app).post('/api/auth/change-password').set('Authorization', auth(resetToken))
+        .send({ currentPassword: 'ResetPassword123!', newPassword: 'ShouldNotWork123!' }).expect(500);
+      await login('notification@test.local', 'ResetPassword123!');
+      await request(app).post('/api/auth/login').send({ email: 'notification@test.local', password: 'ShouldNotWork123!' }).expect(401);
+    } finally {
+      await pool.query('DROP TRIGGER reject_notification ON password_change_notifications');
+      await pool.query('DROP FUNCTION reject_notification()');
+    }
+  });
+});

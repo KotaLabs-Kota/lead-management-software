@@ -188,3 +188,32 @@ only permitted call metadata is stored.**
 - Meta/Google integrations are only promised after platform eligibility and
   access are verified (Stage 6).
 - One stage at a time: Stage 3 (web CRM) starts after Stage 2 is tested.
+
+### Password-change notifications: deployment
+
+Password-change notifications are **disabled by default** to keep password changes
+working during a rolling deployment. Enable them separately for each environment
+only after its database migration and backend deployment are complete. There is no
+backfill: changes made before enabling notifications are not recorded. Once enabled,
+if notification storage fails, the password change is rolled back rather than
+silently losing the event. The notification contains user/actor identities and time,
+never passwords, password hashes, or tokens. Read status is per administrator.
+
+1. Back up the target database and confirm the target is the correct test or
+   production Neon database. Using a trusted local checkout with Node and dev
+   dependencies installed, securely set `DATABASE_URL` to that database's connection
+   string (do not paste credentials into chat or commit them). Run
+   `npm run db:migrate` from the repository root. Confirm `0002_password_notifications.sql`
+   applied successfully. The runner tracks migrations in `schema_migrations`; if the
+   original schema was applied manually rather than by the runner, reconcile its
+   migration history first instead of blindly running it. The production Docker image
+   does not include `tsx`, so its `npm run db:migrate` is not a migration runner.
+2. Deploy the backend containing this change to the target Render service. Set its
+   environment variable `PASSWORD_CHANGE_NOTIFICATIONS_ENABLED=true` and redeploy.
+   Keep it unset/false until the migration is confirmed. Repeat separately for live;
+   do not point test and production at the same database.
+3. Deploy the matching web frontend (Vercel preview for testing). Log in as an admin,
+   make a test password change, and check the bell in the header. A frontend from an
+   older branch will not show the bell. Employees cannot access notification APIs.
+
+Only enable the production setting as part of an approved production rollout.

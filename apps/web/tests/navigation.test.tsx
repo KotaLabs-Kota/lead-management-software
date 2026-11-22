@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '@/components/layout/AppShell';
 
 const state = vi.hoisted(() => ({ path: '/leads', user: { name: 'Admin', email: 'admin@example.com', role: 'ADMIN' } as { name: string; email: string; role: string } | null, loading: false, replace: vi.fn(), logout: vi.fn() }));
+vi.mock('@/components/layout/PasswordNotifications', () => ({ PasswordNotifications: () => <div>Notifications</div> }));
 vi.mock('next/navigation', () => ({ usePathname: () => state.path, useRouter: () => ({ replace: state.replace }) }));
 vi.mock('@/lib/auth', () => ({ useAuth: () => ({ user: state.user, loading: state.loading, logout: state.logout }) }));
 
@@ -14,6 +15,13 @@ describe('shared CRM navigation', () => {
     expect(screen.getByText('Leads content')).toBeInTheDocument();
     expect(screen.getAllByRole('link', { name: /Dashboard/ }).every((link) => link.getAttribute('href') === '/dashboard')).toBe(true);
     expect(screen.getByRole('link', { name: /Reports/ })).toHaveAttribute('href', '/reports');
+  });
+  it('shows notifications only for admins', () => {
+    const view = render(<AppShell>Content</AppShell>);
+    expect(screen.getByText('Notifications')).toBeInTheDocument();
+    state.user = { name: 'Employee', email: 'employee@example.com', role: 'EMPLOYEE' };
+    view.rerender(<AppShell>Content</AppShell>);
+    expect(screen.queryByText('Notifications')).not.toBeInTheDocument();
   });
   it('opens and closes the mobile menu', () => {
     render(<AppShell>Content</AppShell>);

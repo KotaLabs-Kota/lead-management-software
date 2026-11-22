@@ -164,7 +164,15 @@ export async function changePassword(req: Request, res: Response): Promise<void>
   const newHash = await hashPassword(newPassword);
 
   await withTransaction(async (client) => {
-    await client.query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [newHash, user.id]);
+    // A concurrent password change must not overwrite a newer password after
+    // both requests validated the same old one.
+    const updated = await client.query(`UPDATE users SET password_hash = $1 WHERE id = $2 AND password_hash = $3`,
+      [newHash, user.id, user.password_hash]);
+    if (updated.rowCount !== 1) throw invalidCredentials();
+    if (env.PASSWORD_CHANGE_NOTIFICATIONS_ENABLED) {
+      await client.query(`INSERT INTO password_change_notifications (subject_user_id, actor_user_id, kind)
+        VALUES ($1, $1, 'SELF_CHANGE')`, [user.id]);
+    }
     // Force every other session to log in again with the new password.
     await client.query(
       `UPDATE auth_refresh_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`,

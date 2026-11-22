@@ -14,6 +14,7 @@ import { callSyncRouter } from './modules/call-sync/call-sync.routes';
 import { devicesRouter } from './modules/devices/devices.routes';
 import { followupsRouter } from './modules/followups/followups.routes';
 import { leadsRouter } from './modules/leads/leads.routes';
+import { notificationsRouter } from './modules/notifications/notifications.routes';
 import { reportsRouter } from './modules/reports/reports.routes';
 import { usersRouter } from './modules/users/users.routes';
 
@@ -83,6 +84,7 @@ export function createApp(): Express {
   app.use('/api/v1/call-sync', callSyncRouter);
   app.use('/api/v1/followups', followupsRouter);
   app.use('/api/v1/reports', reportsRouter);
+  app.use('/api/v1/notifications', notificationsRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);
