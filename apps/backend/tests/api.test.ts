@@ -765,6 +765,29 @@ describe('reports', () => {
     expect(empty.headers['x-export-has-more']).toBe('false');
   });
 
+  it('exports only filled lead fields to PDF while preserving filtering and access control', async () => {
+    await request(app).post('/api/v1/leads').set('Authorization', `Bearer ${adminToken}`)
+      .send({ customerName: 'PDF Customer', phone: '+919876000194', source: 'MANUAL',
+        email: 'test@example.com', city: 'Kota', notes: 'Follow up next week' }).expect(201);
+    const res = await request(app).get('/api/v1/reports/leads.pdf?search=PDF%20Customer')
+      .set('Authorization', `Bearer ${adminToken}`).expect(200);
+    expect(res.headers['x-export-row-count']).toBe('1');
+    const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    const pdf = await getDocument({ data: new Uint8Array(res.body), useSystemFonts: true }).promise;
+    const page = await pdf.getPage(1);
+    const content = await page.getTextContent();
+    const text = content.items.map((item) => 'str' in item ? item.str : '').join(' ');
+    expect(text).toContain('PDF Customer');
+    expect(text).toContain('test@example.com');
+    expect(text).toContain('Kota');
+    expect(text).toContain('Follow up next week');
+    expect(text).not.toContain('Alternate phone');
+    expect(text).not.toContain('Vehicle type');
+    await pdf.destroy();
+    await request(app).get('/api/v1/reports/leads.pdf?search=PDF%20Customer')
+      .set('Authorization', `Bearer ${employeeToken}`).expect(403);
+  });
+
   it('escapes spreadsheet formula prefixes in customer-entered CSV fields', async () => {
     await request(app).post('/api/v1/leads').set('Authorization', `Bearer ${adminToken}`)
       .send({ customerName: '=2+3', phone: '+919876000195', source: 'MANUAL' }).expect(201);
