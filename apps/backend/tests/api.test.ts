@@ -1074,3 +1074,65 @@ describe('KotaLabs owner controls', () => {
     env.OWNER_CONTROLS_ENABLED = false;
   });
 });
+
+describe('owner password login', () => {
+  const key = 'c'.repeat(64);
+  const authorization = `Bearer ${key}`;
+  const password = 'correct horse river sunset 927';
+  const replacement = 'another long secure owner phrase 42';
+  let session = '';
+
+  it('keeps password login opt-in and requires the independent recovery key for setup', async () => {
+    env.OWNER_CONTROL_KEY = key;
+    env.OWNER_CONTROLS_ENABLED = true;
+    await request(app).post('/api/owner/login').send({ password }).expect(404);
+    await request(app).put('/api/owner/password').set('Authorization', authorization).send({ password }).expect(404);
+    env.OWNER_PASSWORD_LOGIN_ENABLED = true;
+    await request(app).post('/api/owner/login').send({ password }).expect(401);
+    await request(app).put('/api/owner/password').set('Authorization', `Bearer ${adminToken}`).send({ password }).expect(401);
+    await request(app).put('/api/owner/password').set('Authorization', authorization).send({ password: 'too short' }).expect(422);
+    await request(app).put('/api/owner/password').set('Authorization', authorization).send({ password }).expect(200);
+    const { pool } = await import('../src/db/pool');
+    const stored = await pool.query('SELECT password_hash FROM owner_password_login WHERE singleton');
+    expect(stored.rows[0].password_hash).toMatch(/^scrypt\$/);
+    expect(stored.rows[0].password_hash).not.toContain(password);
+  });
+  it('issues a separate short-lived owner session and rejects wrong credentials', async () => {
+    await request(app).post('/api/owner/login').send({ password: 'wrong password' }).expect(401);
+    const loginResponse = await request(app).post('/api/owner/login').send({ password }).expect(200);
+    session = loginResponse.body.token;
+    expect(loginResponse.body.expiresIn).toBe(900);
+    expect(session).not.toContain(password);
+    await request(app).get('/api/owner/status').set('Authorization', `Bearer ${session}`).expect(200);
+    await request(app).get('/api/v1/users').set('Authorization', `Bearer ${session}`).expect(401);
+    await request(app).put('/api/owner/password').set('Authorization', `Bearer ${session}`).send({ password: replacement }).expect(401);
+    await request(app).put('/api/owner/service').set('Authorization', `Bearer ${session}`).send({ suspended: true }).expect(200);
+    await request(app).get('/api/auth/me').set('Authorization', `Bearer ${adminToken}`).expect(503);
+    await request(app).put('/api/owner/service').set('Authorization', `Bearer ${session}`).send({ suspended: false }).expect(200);
+  });
+  it('invalidates old sessions after password reset or owner key rotation', async () => {
+    await request(app).put('/api/owner/password').set('Authorization', authorization).send({ password: replacement }).expect(200);
+    await request(app).get('/api/owner/status').set('Authorization', `Bearer ${session}`).expect(401);
+    await request(app).post('/api/owner/login').send({ password }).expect(401);
+    const loginResponse = await request(app).post('/api/owner/login').send({ password: replacement }).expect(200);
+    const newSession = loginResponse.body.token as string;
+    env.OWNER_CONTROL_KEY = 'd'.repeat(64);
+    await request(app).get('/api/owner/status').set('Authorization', `Bearer ${newSession}`).expect(401);
+    env.OWNER_CONTROL_KEY = key;
+    await request(app).get('/api/owner/status').set('Authorization', `Bearer ${newSession}`).expect(200);
+    // Repeated wrong passwords are throttled, but recovery-key access remains available.
+    let limited = false;
+    for (let i = 0; i < 6; i++) {
+      const attempt = await request(app).post('/api/owner/login').send({ password: 'definitely incorrect' });
+      if (attempt.status === 429) { limited = true; break; }
+      expect(attempt.status).toBe(401);
+    }
+    expect(limited).toBe(true);
+    await request(app).get('/api/owner/status').set('Authorization', authorization).expect(200);
+    env.OWNER_PASSWORD_LOGIN_ENABLED = false;
+    await request(app).get('/api/owner/status').set('Authorization', `Bearer ${newSession}`).expect(401);
+    await request(app).get('/api/owner/status').set('Authorization', authorization).expect(200);
+    env.OWNER_CONTROLS_ENABLED = false;
+    env.OWNER_CONTROL_KEY = undefined;
+  });
+});

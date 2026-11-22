@@ -58,3 +58,25 @@ and logs. The key must never appear in requests' URLs or logs.
 - No real-phone, adversarial security, production or multi-instance tests have
   been completed for this feature. Backups, rollback and credential rotation
   remain necessary before rollout.
+
+## Optional password login (testing only)
+
+Password login is separate from client admin accounts and disabled by default.
+Once `0004_owner_password.sql` is applied in the approved test database, set
+`OWNER_PASSWORD_LOGIN_ENABLED=true` in the test backend and redeploy. Keep
+`OWNER_CONTROLS_ENABLED=true` and the independent random `OWNER_CONTROL_KEY`.
+Use the correct test preview and verify its backend before entering credentials.
+Unlock using the recovery key and set a unique passphrase of 16–128 characters;
+lock and choose password login to test. Never send the password or key in chat.
+The database stores a salted scrypt hash, not the password. The key remains able
+both to unlock the panel and to reset the password; keep it in a password manager.
+Password login returns a 15-minute memory-only bearer session, invalidated when
+the password or owner key is changed or password login is disabled. Locking the
+page clears the local token but does not revoke a stolen token on the server.
+
+Password attempts are rate limited per backend process (not across instances).
+There is no MFA, centralized rate limit, account recovery verification or
+per-person identity. Password login is not production-ready until MFA, external
+rate limiting, security review and real-environment testing are in place. Do
+not use weak, reused or shared passwords. As with other owner controls, do not
+claim the hidden URL alone is security and ensure contractual transparency.

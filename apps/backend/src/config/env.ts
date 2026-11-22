@@ -39,6 +39,7 @@ const envSchema = z.object({
   // An independent 256-bit randomly generated owner key; never use a human password.
   OWNER_CONTROLS_ENABLED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
   OWNER_CONTROL_KEY: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  OWNER_PASSWORD_LOGIN_ENABLED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
   DEFAULT_COUNTRY_CODE: z.string().length(2).default('IN'),
   PASSWORD_CHANGE_NOTIFICATIONS_ENABLED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
   CALL_EVENT_AUTO_CREATE_LEAD: z
@@ -50,6 +51,9 @@ const envSchema = z.object({
     .default('true')
     .transform((v) => v === 'true'),
 }).superRefine((value, ctx) => {
+  if (value.OWNER_PASSWORD_LOGIN_ENABLED && !value.OWNER_CONTROLS_ENABLED) {
+    ctx.addIssue({ code: 'custom', path: ['OWNER_PASSWORD_LOGIN_ENABLED'], message: 'Owner controls must be enabled before password login' });
+  }
   if (value.OWNER_CONTROLS_ENABLED && !value.OWNER_CONTROL_KEY) {
     ctx.addIssue({ code: 'custom', path: ['OWNER_CONTROL_KEY'], message: 'OWNER_CONTROL_KEY is required when owner controls are enabled' });
   }
