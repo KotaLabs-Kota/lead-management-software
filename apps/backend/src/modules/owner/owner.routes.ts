@@ -14,7 +14,7 @@ export const ownerRouter = Router();
 // Rate limits are per backend instance; use an edge/shared limiter in production.
 ownerRouter.use(rateLimit({ windowMs: 15 * 60 * 1000, limit: 100, standardHeaders: 'draft-7', legacyHeaders: false }));
 ownerRouter.use((_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
-const passwordSchema = z.object({ password: z.string().min(16).max(128).refine((value) => value.trim().length >= 16, 'Use at least 16 non-padding characters') }).strict();
+const passwordSchema = z.object({ password: z.string().min(12).max(128).refine((value) => value.trim().length >= 12, 'Use at least 12 non-padding characters') }).strict();
 const loginSchema = z.object({ password: z.string().min(1).max(128) }).strict();
 const passwordAttempts = rateLimit({
   windowMs: 15 * 60 * 1000, limit: 5, standardHeaders: 'draft-7', legacyHeaders: false,

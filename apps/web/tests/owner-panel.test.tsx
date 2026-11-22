@@ -54,8 +54,8 @@ describe('owner password login', () => {
     fireEvent.change(screen.getByLabelText('Owner access key'), { target: { value: 'recovery-key' } });
     fireEvent.click(screen.getByRole('button', { name: 'Unlock owner panel' }));
     await screen.findByText('Set or reset owner password');
-    fireEvent.change(screen.getByLabelText('New owner password'), { target: { value: 'unique long passphrase' } });
-    fireEvent.change(screen.getByLabelText('Confirm owner password'), { target: { value: 'unique long passphrase' } });
+    fireEvent.change(screen.getByLabelText('New owner password'), { target: { value: 'aB9!xD7@uP2?' } });
+    fireEvent.change(screen.getByLabelText('Confirm owner password'), { target: { value: 'aB9!xD7@uP2?' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save owner password' }));
     expect(await screen.findByRole('status')).toHaveTextContent('Password saved');
     expect(fetch).toHaveBeenCalledWith('/api/owner/password', expect.objectContaining({ method: 'PUT', headers: expect.objectContaining({ Authorization: 'Bearer recovery-key' }) }));

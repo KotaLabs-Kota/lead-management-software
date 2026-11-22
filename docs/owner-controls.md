@@ -66,7 +66,7 @@ Once `0004_owner_password.sql` is applied in the approved test database, set
 `OWNER_PASSWORD_LOGIN_ENABLED=true` in the test backend and redeploy. Keep
 `OWNER_CONTROLS_ENABLED=true` and the independent random `OWNER_CONTROL_KEY`.
 Use the correct test preview and verify its backend before entering credentials.
-Unlock using the recovery key and set a unique passphrase of 16–128 characters;
+Unlock using the recovery key and set a unique password of 12–128 characters (use a long, unique, randomly generated password where possible);
 lock and choose password login to test. Never send the password or key in chat.
 The database stores a salted scrypt hash, not the password. The key remains able
 both to unlock the panel and to reset the password; keep it in a password manager.

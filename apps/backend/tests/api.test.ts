@@ -1090,7 +1090,10 @@ describe('owner password login', () => {
     env.OWNER_PASSWORD_LOGIN_ENABLED = true;
     await request(app).post('/api/owner/login').send({ password }).expect(401);
     await request(app).put('/api/owner/password').set('Authorization', `Bearer ${adminToken}`).send({ password }).expect(401);
-    await request(app).put('/api/owner/password').set('Authorization', authorization).send({ password: 'too short' }).expect(422);
+    await request(app).put('/api/owner/password').set('Authorization', authorization).send({ password: '12345678901' }).expect(422);
+    await request(app).put('/api/owner/password').set('Authorization', authorization).send({ password: '            ' }).expect(422);
+    await request(app).put('/api/owner/password').set('Authorization', authorization).send({ password: 'aB9!xD7@uP2?' }).expect(200);
+    await request(app).post('/api/owner/login').send({ password: 'aB9!xD7@uP2?' }).expect(200);
     await request(app).put('/api/owner/password').set('Authorization', authorization).send({ password }).expect(200);
     const { pool } = await import('../src/db/pool');
     const stored = await pool.query('SELECT password_hash FROM owner_password_login WHERE singleton');
