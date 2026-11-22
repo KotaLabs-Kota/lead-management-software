@@ -10,7 +10,7 @@ import { Field, Input } from '@/components/ui/Input';
 import { useToast } from '@/components/Toast';
 
 export default function SettingsPage() {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const toast = useToast();
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -33,7 +33,8 @@ export default function SettingsPage() {
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
-      toast.push('success', 'Password changed. Please sign in again on other devices.');
+      toast.push('success', 'Password changed. Please sign in again.');
+      await logout();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not change password.');
     } finally {
@@ -101,7 +102,7 @@ export default function SettingsPage() {
             {submitting ? 'Changing…' : 'Change password'}
           </Button>
           <p className="text-xs text-slate-500">
-            Changing your password signs out all other sessions.
+            Changing your password signs out all web sessions, including this one.
           </p>
         </form>
       </Card>

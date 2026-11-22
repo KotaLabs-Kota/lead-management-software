@@ -17,6 +17,7 @@ import { leadsRouter } from './modules/leads/leads.routes';
 import { notificationsRouter } from './modules/notifications/notifications.routes';
 import { reportsRouter } from './modules/reports/reports.routes';
 import { usersRouter } from './modules/users/users.routes';
+import { forbidden } from './utils/errors';
 
 export function createApp(): Express {
   const app = express();
@@ -50,7 +51,7 @@ export function createApp(): Express {
         // Non-browser clients (Android app, curl, Postman) have no Origin.
         if (!origin) return callback(null, true);
         if (corsOrigins.includes(origin)) return callback(null, true);
-        return callback(new Error(`Origin ${origin} is not allowed`));
+        return callback(forbidden('Request origin is not allowed'));
       },
       credentials: true,
       exposedHeaders: ['X-Export-Row-Count', 'X-Export-Has-More'],

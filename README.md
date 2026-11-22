@@ -66,7 +66,7 @@ No Firebase/Supabase, no paid services. Estimated infrastructure budget:
 
 ## Quick start (local development)
 
-Prerequisites: Node.js ≥ 20.11, npm. No local PostgreSQL needed for tests
+Prerequisites: Node.js 22.12+ (recommended) or 20.19+, npm. No local PostgreSQL needed for tests
 (embedded Postgres is used), but for running the server you need a database —
 either via Docker Compose or a local install.
 
@@ -217,3 +217,5 @@ never passwords, password hashes, or tokens. Read status is per administrator.
    older branch will not show the bell. Employees cannot access notification APIs.
 
 Only enable the production setting as part of an approved production rollout.
+
+For outstanding production, security, backup, retention and phone-testing steps, see [the release checklist](docs/release-checklist.md).

@@ -5,11 +5,12 @@
  */
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
+import jwt from 'jsonwebtoken';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createApp } from '../src/app';
 import { closePool } from '../src/db/pool';
-import { env } from '../src/config/env';
+import { corsOrigins, env } from '../src/config/env';
 import { seedUsers, startTestDatabase, stopTestDatabase } from './setup';
 
 const app = createApp();
@@ -69,6 +70,14 @@ describe('health', () => {
     expect(unlabelled.body.environment).toBeUndefined();
   });
 
+  it('rejects unapproved browser origins without reporting a server failure', async () => {
+    const blocked = await request(app).get('/api/health').set('Origin', 'https://untrusted.example').expect(403);
+    expect(blocked.body.error.code).toBe('FORBIDDEN');
+    expect(blocked.headers['access-control-allow-origin']).toBeUndefined();
+    const allowed = await request(app).get('/api/health').set('Origin', corsOrigins[0]!).expect(200);
+    expect(allowed.headers['access-control-allow-origin']).toBe(corsOrigins[0]);
+  });
+
   it('unknown route returns 404 JSON', async () => {
     const res = await request(app).get('/api/does-not-exist').expect(404);
     expect(res.body.error.code).toBe('NOT_FOUND');
@@ -111,18 +120,24 @@ describe('auth', () => {
       .send({ email: 'employee@test.local', password: 'EmployeePass123!' })
       .expect(200);
     const firstRefresh = loginRes.body.refreshToken as string;
+    const otherSession = await request(app).post('/api/auth/login')
+      .send({ email: 'employee@test.local', password: 'EmployeePass123!' }).expect(200);
 
     const refreshed = await request(app)
       .post('/api/auth/refresh')
       .send({ refreshToken: firstRefresh })
       .expect(200);
     expect(refreshed.body.refreshToken).not.toBe(firstRefresh);
+    const replacementRefresh = refreshed.body.refreshToken as string;
 
     // Reusing the rotated token is treated as theft and fails.
     await request(app)
       .post('/api/auth/refresh')
       .send({ refreshToken: firstRefresh })
       .expect(401);
+    // Reuse must revoke the new token, not roll the revocation back.
+    await request(app).post('/api/auth/refresh').send({ refreshToken: replacementRefresh }).expect(401);
+    await request(app).post('/api/auth/refresh').send({ refreshToken: otherSession.body.refreshToken }).expect(401);
   });
 
   it('logout revokes the refresh token', async () => {
@@ -891,6 +906,7 @@ describe('password change notifications', () => {
     expect(result.body.unreadCount).toBe(0);
     await request(app).post('/api/auth/change-password').set('Authorization', auth(subjectToken))
       .send({ currentPassword: 'OldPassword123!', newPassword: 'NewPassword123!' }).expect(204);
+    await request(app).get('/api/auth/me').set('Authorization', auth(subjectToken)).expect(401);
     result = await request(app).get('/api/v1/notifications').set('Authorization', auth(adminToken)).expect(200);
     expect(result.body.unreadCount).toBe(1);
     expect(result.body.notifications[0]).toMatchObject({ subjectName: 'Notification Employee', actorName: 'Notification Employee', kind: 'SELF_CHANGE', read: false });
@@ -905,7 +921,9 @@ describe('password change notifications', () => {
     const reset = list.body.notifications.find((n: { kind: string }) => n.kind === 'ADMIN_RESET');
     expect(reset).toMatchObject({ subjectName: 'Notification Employee', actorName: 'Test Admin', read: false });
     expect(JSON.stringify(list.body)).not.toContain('ResetPassword123');
-    await request(app).post(`/api/v1/notifications/${reset.id}/read`).set('Authorization', auth(subjectToken)).expect(403);
+    await request(app).post(`/api/v1/notifications/${reset.id}/read`).set('Authorization', auth(subjectToken)).expect(401);
+    const refreshedSubject = await login('notification@test.local', 'ResetPassword123!');
+    await request(app).post(`/api/v1/notifications/${reset.id}/read`).set('Authorization', auth(refreshedSubject)).expect(403);
     await request(app).post(`/api/v1/notifications/${reset.id}/read`).set('Authorization', auth(adminToken)).expect(204);
     await request(app).post(`/api/v1/notifications/${reset.id}/read`).set('Authorization', auth(adminToken)).expect(204);
     const first = await request(app).get('/api/v1/notifications').set('Authorization', auth(adminToken)).expect(200);
@@ -949,5 +967,36 @@ describe('password change notifications', () => {
       await pool.query('DROP TRIGGER reject_notification ON password_change_notifications');
       await pool.query('DROP FUNCTION reject_notification()');
     }
+  });
+});
+
+
+describe('session security', () => {
+  it('rejects legacy access tokens that have no password version', async () => {
+    const legacy = jwt.sign({ role: 'ADMIN', tokenType: 'access' }, env.JWT_ACCESS_SECRET, {
+      issuer: env.JWT_ISSUER, audience: env.JWT_AUDIENCE, algorithm: 'HS256', subject: adminId, expiresIn: 3600,
+    });
+    await request(app).get('/api/auth/me').set('Authorization', `Bearer ${legacy}`).expect(401);
+  });
+
+  it('prevents a refresh racing a password reset from keeping a usable session', async () => {
+    const account = await request(app).post('/api/v1/users').set('Authorization', `Bearer ${adminToken}`)
+      .send({ name: 'Race Test', email: 'race@test.local', password: 'RaceOldPassword123!', role: 'EMPLOYEE' }).expect(201);
+    const session = await request(app).post('/api/auth/login')
+      .send({ email: 'race@test.local', password: 'RaceOldPassword123!' }).expect(200);
+    const [refresh, reset] = await Promise.all([
+      request(app).post('/api/auth/refresh').send({ refreshToken: session.body.refreshToken }),
+      request(app).patch(`/api/v1/users/${account.body.user.id}`).set('Authorization', `Bearer ${adminToken}`)
+        .send({ password: 'RaceNewPassword123!' }),
+    ]);
+    expect(reset.status).toBe(200);
+    expect([200, 401]).toContain(refresh.status);
+    await request(app).get('/api/auth/me').set('Authorization', `Bearer ${session.body.accessToken}`).expect(401);
+    if (refresh.status === 200) {
+      await request(app).get('/api/auth/me').set('Authorization', `Bearer ${refresh.body.accessToken}`).expect(401);
+      await request(app).post('/api/auth/refresh').send({ refreshToken: refresh.body.refreshToken }).expect(401);
+    }
+    await request(app).post('/api/auth/login').send({ email: 'race@test.local', password: 'RaceOldPassword123!' }).expect(401);
+    await login('race@test.local', 'RaceNewPassword123!');
   });
 });

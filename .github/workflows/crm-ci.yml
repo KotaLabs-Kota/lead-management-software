@@ -1,0 +1,29 @@
+name: CRM checks
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm audit --audit-level=moderate
+      - run: npm run typecheck --workspace @kotalabs/backend
+      - run: npm run test --workspace @kotalabs/backend
+      - run: npm run build --workspace @kotalabs/backend
+      - run: npm run typecheck --workspace @kotalabs/web
+      - run: npm run test --workspace @kotalabs/web
+      - run: npm run build --workspace @kotalabs/web
+      - name: Build backend container
+        run: docker build -f apps/backend/Dockerfile -t crm-backend-ci .
