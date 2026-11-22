@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from 'express';
+import { enforceOwnerAccountBlock } from '../modules/owner/owner-control';
 import { maybeOne } from '../db/pool';
 import type { UserRole } from '../types/domain';
 import { forbidden, unauthorized } from '../utils/errors';
@@ -53,6 +54,7 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
       throw unauthorized('Session expired. Please sign in again.', 'INVALID_TOKEN');
     }
 
+    await enforceOwnerAccountBlock(user.id);
     req.auth = { userId: user.id, role: user.role, email: user.email, name: user.name };
     next();
   } catch (error) {

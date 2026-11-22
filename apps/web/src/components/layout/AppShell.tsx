@@ -13,7 +13,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
-  const isPublic = pathname === '/login' || pathname === '/';
+  const isPublic = pathname === '/login' || pathname === '/' || pathname === '/kotalabs-owner';
 
   useEffect(() => {
     if (!isPublic && !loading && !user) router.replace('/login');

@@ -1000,3 +1000,77 @@ describe('session security', () => {
     await login('race@test.local', 'RaceNewPassword123!');
   });
 });
+
+describe('KotaLabs owner controls', () => {
+  const ownerKey = 'a'.repeat(64);
+  const owner = `Bearer ${ownerKey}`;
+  let targetId = '';
+  let targetAccess = '';
+  let targetRefresh = '';
+  let targetDevice = '';
+
+  it('is disabled by default, and rejects ordinary users and incorrect keys', async () => {
+    await request(app).get('/api/owner/status').expect(404);
+    env.OWNER_CONTROL_KEY = ownerKey;
+    env.OWNER_CONTROLS_ENABLED = true;
+    await request(app).get('/api/owner/status').set('Authorization', `Bearer ${adminToken}`).expect(401);
+    await request(app).get('/api/owner/status').set('Authorization', `Bearer ${'b'.repeat(64)}`).expect(401);
+    const status = await request(app).get('/api/owner/status').set('Authorization', owner).expect(200);
+    expect(status.headers['cache-control']).toBe('no-store');
+    expect(status.body.suspended).toBe(false);
+    expect(status.body.admins.some((a: { id: string }) => a.id === adminId)).toBe(true);
+  });
+
+  it('suspends all normal API access while health and authenticated owner recovery remain reachable', async () => {
+    await request(app).put('/api/owner/service').set('Authorization', owner).send({ suspended: true }).expect(200);
+    await request(app).get('/healthz').expect(200);
+    await request(app).get('/api/health').expect(200);
+    await request(app).get('/api/owner/status').set('Authorization', owner).expect(200);
+    await request(app).get('/api/v1/leads').set('Authorization', `Bearer ${adminToken}`).expect(503);
+    await request(app).post('/api/auth/login').send({ email: 'admin@test.local', password: 'AdminPass123!' }).expect(503);
+    await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${deviceToken}`).send({ events: [] }).expect(503);
+    await request(app).put('/api/owner/service').set('Authorization', `Bearer ${adminToken}`).send({ suspended: false }).expect(401);
+    await request(app).put('/api/owner/service').set('Authorization', owner).send({ suspended: false }).expect(200);
+    await request(app).get('/api/v1/leads').set('Authorization', `Bearer ${adminToken}`).expect(200);
+  });
+
+  it('blocks a specific admin across login, sessions and devices without disabling other users', async () => {
+    const created = await request(app).post('/api/v1/users').set('Authorization', `Bearer ${adminToken}`)
+      .send({ name: 'Owner test admin', email: 'owner-target@test.local', password: 'OwnerTarget123!', role: 'ADMIN' }).expect(201);
+    targetId = created.body.user.id;
+    const session = await request(app).post('/api/auth/login').send({ email: 'owner-target@test.local', password: 'OwnerTarget123!' }).expect(200);
+    targetAccess = session.body.accessToken; targetRefresh = session.body.refreshToken;
+    const device = await request(app).post('/api/v1/devices/register').set('Authorization', `Bearer ${targetAccess}`)
+      .send({ deviceName: 'Owner test phone', deviceCode: 'owner-test-device' }).expect(201);
+    targetDevice = device.body.deviceToken;
+    await request(app).put(`/api/owner/admins/${employeeId}`).set('Authorization', owner).send({ blocked: true }).expect(404);
+    await request(app).put(`/api/owner/admins/${targetId}`).set('Authorization', owner).send({ blocked: true }).expect(200);
+    await request(app).get('/api/auth/me').set('Authorization', `Bearer ${targetAccess}`).expect(503);
+    await request(app).post('/api/auth/login').send({ email: 'owner-target@test.local', password: 'OwnerTarget123!' }).expect(503);
+    await request(app).post('/api/auth/refresh').send({ refreshToken: targetRefresh }).expect(401);
+    await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${targetDevice}`).send({ events: [] }).expect(503);
+    await request(app).post('/api/v1/call-events').set('Authorization', `Bearer ${targetDevice}`).send({ events: [] }).expect(503);
+    await request(app).get('/api/auth/me').set('Authorization', `Bearer ${adminToken}`).expect(200);
+    // Another client admin cannot remove an owner block by changing user status.
+    await request(app).patch(`/api/v1/users/${targetId}`).set('Authorization', `Bearer ${adminToken}`).send({ status: 'ACTIVE' }).expect(200);
+    await request(app).get('/api/auth/me').set('Authorization', `Bearer ${targetAccess}`).expect(503);
+    await request(app).put(`/api/owner/admins/${targetId}`).set('Authorization', owner).send({ blocked: false }).expect(200);
+    await request(app).post('/api/auth/login').send({ email: 'owner-target@test.local', password: 'OwnerTarget123!' }).expect(200);
+    // The unblocked device credential is still valid; an empty batch reaches validation.
+    const oldGate = env.CALL_EVENT_AUTO_CREATE_LEAD;
+    env.CALL_EVENT_AUTO_CREATE_LEAD = true;
+    try {
+      await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${targetDevice}`).send({ events: [] }).expect(422);
+    } finally { env.CALL_EVENT_AUTO_CREATE_LEAD = oldGate; }
+  });
+
+  it('records only metadata and makes repeated changes idempotent', async () => {
+    const { pool } = await import('../src/db/pool');
+    await request(app).put('/api/owner/service').set('Authorization', owner).send({ suspended: false }).expect(200);
+    const audit = await pool.query('SELECT action, target_user_id FROM owner_control_audit ORDER BY created_at');
+    expect(audit.rows.map((row) => row.action)).toEqual(['SERVICE_SUSPENDED', 'SERVICE_RESUMED', 'ADMIN_BLOCKED', 'ADMIN_UNBLOCKED']);
+    expect(JSON.stringify(audit.rows)).not.toContain(ownerKey);
+    env.OWNER_CONTROL_KEY = undefined;
+    env.OWNER_CONTROLS_ENABLED = false;
+  });
+});

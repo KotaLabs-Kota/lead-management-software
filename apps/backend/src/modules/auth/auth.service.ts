@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { env } from '../../config/env';
+import { enforceOwnerAccountBlock } from '../owner/owner-control';
 import { maybeOne, one, pool, withTransaction, type Queryable } from '../../db/pool';
 import { logger } from '../../lib/logger';
 import type { UserRole, UserStatus } from '../../types/domain';
@@ -78,6 +79,7 @@ export async function login(req: Request, res: Response): Promise<void> {
     const current = await maybeOne<UserRow>(`SELECT ${USER_COLUMNS} FROM users WHERE id = $1 FOR UPDATE`, [user.id], client);
     if (!current || current.password_hash !== user.password_hash) throw invalidCredentials();
     if (current.status !== 'ACTIVE') throw unauthorized('This account has been disabled', 'ACCOUNT_DISABLED');
+    await enforceOwnerAccountBlock(current.id, client);
     await client.query(`UPDATE users SET last_login_at = now() WHERE id = $1`, [user.id]);
     return issueSession(current, client);
   });
@@ -113,6 +115,7 @@ export async function refresh(req: Request, res: Response): Promise<void> {
     }
     if (new Date(row.expires_at).getTime() <= Date.now()) throw unauthorized('Refresh token expired', 'TOKEN_EXPIRED');
     if (user.status !== 'ACTIVE') throw unauthorized('This account has been disabled', 'ACCOUNT_DISABLED');
+    await enforceOwnerAccountBlock(user.id, client);
     await client.query(`UPDATE auth_refresh_tokens SET revoked_at = now() WHERE id = $1`, [row.id]);
     return { reused: false as const, session: await issueSession(user, client) };
   });

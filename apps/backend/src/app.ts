@@ -14,6 +14,8 @@ import { callSyncRouter } from './modules/call-sync/call-sync.routes';
 import { devicesRouter } from './modules/devices/devices.routes';
 import { followupsRouter } from './modules/followups/followups.routes';
 import { leadsRouter } from './modules/leads/leads.routes';
+import { ownerRouter } from './modules/owner/owner.routes';
+import { enforceServiceAccess } from './modules/owner/owner-control';
 import { notificationsRouter } from './modules/notifications/notifications.routes';
 import { reportsRouter } from './modules/reports/reports.routes';
 import { usersRouter } from './modules/users/users.routes';
@@ -77,6 +79,9 @@ export function createApp(): Express {
     res.status(200).json({ status: 'ok', service: 'kotalabs-crm-backend', ...(env.HEALTH_ENVIRONMENT_LABEL ? { environment: env.HEALTH_ENVIRONMENT_LABEL } : {}) });
   });
 
+  // Owner controls and health remain reachable while normal CRM APIs are suspended.
+  app.use('/api/owner', ownerRouter);
+  app.use(['/api/auth', '/api/v1'], enforceServiceAccess);
   app.use('/api/auth', authRouter);
   app.use('/api/v1/users', usersRouter);
   app.use('/api/v1/devices', devicesRouter);

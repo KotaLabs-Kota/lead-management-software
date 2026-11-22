@@ -69,3 +69,10 @@ frontend deployments and Android app origins separate.
   enable test flags on live until approved.
 - [ ] Keep each client's data and credentials isolated. This application is not
   designed or audited as a shared multi-tenant system.
+
+## Optional KotaLabs owner controls
+
+- [ ] Before enabling, follow `docs/owner-controls.md`: back up and apply the new
+  migration in an approved environment, provision a separate random key, add
+  MFA/edge protection, and test suspension and recovery on website and phones.
+  The control is disabled by default; disabling the feature bypasses its blocks.

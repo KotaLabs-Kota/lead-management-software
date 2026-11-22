@@ -18,7 +18,7 @@ function authenticateEither(req: Parameters<typeof authenticate>[0], res: Parame
     authenticateDevice(req, res, (deviceError) => {
       if (!deviceError) return next();
       // Report the user-auth error (more informative for web clients).
-      next(userError);
+      next(req.header('authorization')?.startsWith('Bearer dvc_') ? deviceError : userError);
     });
   });
 }

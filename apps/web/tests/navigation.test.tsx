@@ -36,6 +36,14 @@ describe('shared CRM navigation', () => {
     expect(screen.queryByText('Private content')).not.toBeInTheDocument();
     expect(state.replace).toHaveBeenCalledWith('/login');
   });
+  it('lets the owner panel load without a client session or navigation', () => {
+    state.path = '/kotalabs-owner';
+    state.user = null;
+    render(<AppShell>Owner form</AppShell>);
+    expect(screen.getByText('Owner form')).toBeInTheDocument();
+    expect(state.replace).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Open navigation' })).not.toBeInTheDocument();
+  });
   it('does not put login inside the protected shell', () => {
     state.path = '/login';
     render(<AppShell>Login form</AppShell>);
