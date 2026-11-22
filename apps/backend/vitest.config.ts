@@ -6,9 +6,7 @@ export default defineConfig({
     testTimeout: 60_000,
     hookTimeout: 180_000,
     pool: 'forks',
-    poolOptions: {
-      forks: { singleFork: true },
-    },
+    fileParallelism: false,
     // Applied to process.env BEFORE test files (and therefore the app modules
     // that validate the environment at import time) are loaded.
     env: {

@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express';
+import { env } from '../../config/env';
 import { many, maybeOne, one, withTransaction } from '../../db/pool';
 import { logger } from '../../lib/logger';
 import { conflict, notFound } from '../../utils/errors';
@@ -131,23 +132,26 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
   if (input.password !== undefined) push('password_hash', await hashPassword(input.password));
 
   params.push(id);
-  const user = await one<UserRow>(
-    `UPDATE users SET ${sets.join(', ')} WHERE id = $${params.length}
-     RETURNING id, email, name, role, status, last_login_at, created_at, updated_at,
-               (SELECT COUNT(*) FROM leads l WHERE l.assigned_user_id = users.id) AS lead_count,
-               (SELECT COUNT(*) FROM devices d WHERE d.user_id = users.id AND d.status = 'ACTIVE') AS device_count`,
-    params,
-  );
-
-  // A password reset or a disable must end every existing session.
-  if (input.password !== undefined || input.status === 'DISABLED') {
-    await withTransaction(async (client) => {
+  // Password, token revocation and metadata-only notification commit together.
+  const user = await withTransaction(async (client) => {
+    const updated = await one<UserRow>(
+      `UPDATE users SET ${sets.join(', ')} WHERE id = $${params.length}
+       RETURNING id, email, name, role, status, last_login_at, created_at, updated_at,
+                 (SELECT COUNT(*) FROM leads l WHERE l.assigned_user_id = users.id) AS lead_count,
+                 (SELECT COUNT(*) FROM devices d WHERE d.user_id = users.id AND d.status = 'ACTIVE') AS device_count`,
+      params, client,
+    );
+    if (input.password !== undefined || input.status === 'DISABLED') {
       await client.query(
-        `UPDATE auth_refresh_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`,
-        [id],
+        `UPDATE auth_refresh_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`, [id],
       );
-    });
-  }
+    }
+    if (input.password !== undefined && env.PASSWORD_CHANGE_NOTIFICATIONS_ENABLED) {
+      await client.query(`INSERT INTO password_change_notifications (subject_user_id, actor_user_id, kind)
+        VALUES ($1, $2, 'ADMIN_RESET')`, [id, req.auth!.userId]);
+    }
+    return updated;
+  });
 
   logger.info({ userId: id, updatedFields: Object.keys(input) }, 'User updated by admin');
   res.status(200).json({ user: publicUser(user) });

@@ -1,0 +1,12 @@
+.git
+**/node_modules
+**/dist
+**/build
+**/.next
+**/.test-pgdata
+**/.dev-pgdata
+**/.env
+**/.env.*
+**/*.log
+**/*.pem
+**/*.key

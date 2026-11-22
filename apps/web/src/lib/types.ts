@@ -118,6 +118,7 @@ export interface CallEvent {
   userId: string;
   userName: string | null;
   phoneNumber: string;
+  contactName: string | null;
   direction: CallDirection | null;
   source: CallSource;
   captureMethod: CallCaptureMethod | null;

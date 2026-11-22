@@ -26,6 +26,10 @@ internal object SyncPolicy {
     fun outgoingAllowed(startedAtMillis: Long, outgoingSince: Long?): Boolean =
         outgoingSince != null && startedAtMillis >= outgoingSince
 
+    /** Names are captured only for calls started after separate contact consent. */
+    fun contactNameAllowed(startedAtMillis: Long, consentSince: Long): Boolean =
+        consentSince > 0 && startedAtMillis >= consentSince
+
     /** Select only pending items; an empty list means no HTTP request at all. */
     fun nextBatch(pending: List<UUID>): List<UUID> = pending.distinct().take(MAX_BATCH_SIZE)
 

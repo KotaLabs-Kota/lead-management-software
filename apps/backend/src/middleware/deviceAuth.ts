@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from 'express';
+import { enforceOwnerAccountBlock } from '../modules/owner/owner-control';
 import { maybeOne } from '../db/pool';
 import { unauthorized } from '../utils/errors';
 import { safeEqual, sha256 } from '../utils/tokens';
@@ -62,6 +63,7 @@ export async function authenticateDevice(
       throw unauthorized('The employee account for this device is disabled', 'ACCOUNT_DISABLED');
     }
 
+    await enforceOwnerAccountBlock(device.user_id);
     req.device = { deviceId: device.id, userId: device.user_id, deviceName: device.device_name };
 
     // Best-effort "last seen" tracking — never block the request on it.

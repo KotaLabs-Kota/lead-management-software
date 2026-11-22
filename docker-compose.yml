@@ -26,8 +26,10 @@ services:
 
   backend:
     build:
-      context: ./apps/backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: apps/backend/Dockerfile
+      target: deps
+    working_dir: /app/apps/backend
     container_name: kotalabs-crm-backend
     restart: unless-stopped
     depends_on:
@@ -51,9 +53,10 @@ services:
       - "4000:4000"
     volumes:
       # Mount source for live reload in development (tsx watch).
-      - ./apps/backend/src:/app/src
-      - ./apps/backend/scripts:/app/scripts
-      - ./apps/backend/migrations:/app/migrations
+      - ./apps/backend/src:/app/apps/backend/src
+      - ./apps/backend/scripts:/app/apps/backend/scripts
+      - ./apps/backend/migrations:/app/apps/backend/migrations
+      - ./apps/backend/tsconfig.json:/app/apps/backend/tsconfig.json:ro
     command: ["npx", "tsx", "watch", "src/server.ts"]
 
 volumes:

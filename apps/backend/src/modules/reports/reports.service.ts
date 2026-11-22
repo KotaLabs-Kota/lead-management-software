@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import PDFDocument from 'pdfkit';
+import { renderLeadsPdf } from './leads-pdf';
 import { many, one } from '../../db/pool';
 import { formatLeadNumber } from '../../types/domain';
 import { formatPhone } from '../../utils/phone';
@@ -301,18 +302,33 @@ export async function exportLeadsPdf(req: Request, res: Response): Promise<void>
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', 'attachment; filename="kotalabs-leads.pdf"');
   doc.pipe(res);
-  doc.fontSize(16).text('KotaLabs CRM — Lead export');
-  doc.fontSize(9).text(`Records ${query.offset + (leads.length ? 1 : 0)}–${query.offset + leads.length}${hasMore ? ' (more records available; export the next page)' : ''}`);
-  doc.moveDown();
-  if (leads.length === 0) doc.fontSize(10).text('No leads match these filters.');
-  for (const row of exportRows(leads)) {
-    doc.fontSize(12).text(String(row[0] ?? 'Lead'), { underline: true });
-    doc.fontSize(9);
-    row.slice(1).forEach((value, index) => {
-      const content = value instanceof Date ? value.toISOString() : value == null || value === '' ? '—' : String(value);
-      doc.text(`${exportHeaders[index + 1]}: ${content}`);
-    });
-    doc.moveDown();
-  }
+  renderLeadsPdf(doc, leads.map((lead) => ({
+    code: formatLeadNumber(lead.lead_number),
+    groups: [
+      { title: 'Customer', fields: [
+        { label: 'Customer name', value: lead.customer_name },
+        { label: 'Phone', value: formatPhone(lead.phone) },
+        { label: 'Alternate phone', value: formatPhone(lead.alternate_phone) },
+        { label: 'Email', value: lead.email },
+        { label: 'City', value: lead.city },
+      ] },
+      { title: 'Lead details', fields: [
+        { label: 'Status', value: lead.status.replaceAll('_', ' ') },
+        { label: 'Source', value: lead.source.replaceAll('_', ' ') },
+        { label: 'Assigned to', value: lead.assigned_user_name },
+        { label: 'Vehicle type', value: lead.vehicle_type },
+        { label: 'Vehicle details', value: lead.vehicle_details },
+        { label: 'Requirement', value: lead.requirement },
+        { label: 'Notes', value: lead.notes },
+        { label: 'Lost reason', value: lead.lost_reason },
+      ] },
+      { title: 'Dates', fields: [
+        { label: 'Next follow-up', value: lead.next_followup_at },
+        { label: 'Last contacted', value: lead.last_contacted_at },
+        { label: 'Created', value: lead.created_at },
+        { label: 'Updated', value: lead.updated_at },
+      ] },
+    ],
+  })), query.offset, hasMore);
   doc.end();
 }

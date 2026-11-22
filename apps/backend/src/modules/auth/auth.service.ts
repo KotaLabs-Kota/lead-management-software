@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { env } from '../../config/env';
-import { maybeOne, one, withTransaction } from '../../db/pool';
+import { enforceOwnerAccountBlock } from '../owner/owner-control';
+import { maybeOne, one, pool, withTransaction, type Queryable } from '../../db/pool';
 import { logger } from '../../lib/logger';
 import type { UserRole, UserStatus } from '../../types/domain';
 import { invalidCredentials, unauthorized } from '../../utils/errors';
@@ -32,7 +33,7 @@ function publicUser(user: UserRow) {
   };
 }
 
-async function issueSession(user: UserRow) {
+async function issueSession(user: UserRow, db: Queryable = pool) {
   const { token: accessToken, expiresInSeconds } = signAccessToken(user);
   const refreshToken = generateOpaqueToken(REFRESH_TOKEN_PREFIX);
   const expiresAt = new Date(Date.now() + env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000);
@@ -42,6 +43,7 @@ async function issueSession(user: UserRow) {
      VALUES ($1, $2, $3)
      RETURNING id`,
     [user.id, sha256(refreshToken), expiresAt],
+    db,
   );
 
   return {
@@ -71,12 +73,16 @@ export async function login(req: Request, res: Response): Promise<void> {
     throw unauthorized('This account has been disabled', 'ACCOUNT_DISABLED');
   }
 
-  await maybeOne(
-    `UPDATE users SET last_login_at = now() WHERE id = $1`,
-    [user.id],
-  );
-
-  const session = await issueSession(user);
+  // Serialize session issuance with password changes and account disabling. A
+  // password verified before a concurrent reset must not create a new session.
+  const session = await withTransaction(async (client) => {
+    const current = await maybeOne<UserRow>(`SELECT ${USER_COLUMNS} FROM users WHERE id = $1 FOR UPDATE`, [user.id], client);
+    if (!current || current.password_hash !== user.password_hash) throw invalidCredentials();
+    if (current.status !== 'ACTIVE') throw unauthorized('This account has been disabled', 'ACCOUNT_DISABLED');
+    await enforceOwnerAccountBlock(current.id, client);
+    await client.query(`UPDATE users SET last_login_at = now() WHERE id = $1`, [user.id]);
+    return issueSession(current, client);
+  });
   logger.info({ userId: user.id, role: user.role }, 'User logged in');
   res.status(200).json(session);
 }
@@ -86,48 +92,38 @@ export async function refresh(req: Request, res: Response): Promise<void> {
   const { refreshToken } = req.body as RefreshInput;
   const tokenHash = sha256(refreshToken);
 
-  const session = await withTransaction(async (client) => {
-    const row = await maybeOne<{ id: string; user_id: string; expires_at: Date; revoked_at: Date | null }>(
-      `SELECT id, user_id, expires_at, revoked_at
-         FROM auth_refresh_tokens
-        WHERE token_hash = $1
-        FOR UPDATE`,
-      [tokenHash],
-      client,
-    );
+  // Find the owner first without locking; lock user before token, the same
+  // order used by password reset/disable, then re-read the token under lock.
+  const owner = await maybeOne<{ user_id: string }>(
+    `SELECT user_id FROM auth_refresh_tokens WHERE token_hash = $1`, [tokenHash],
+  );
+  if (!owner) throw unauthorized('Invalid refresh token', 'INVALID_TOKEN');
 
+  const result = await withTransaction(async (client) => {
+    const user = await maybeOne<UserRow>(`SELECT ${USER_COLUMNS} FROM users WHERE id = $1 FOR UPDATE`, [owner.user_id], client);
+    if (!user) throw unauthorized('Invalid refresh token', 'INVALID_TOKEN');
+    const row = await maybeOne<{ id: string; expires_at: Date; revoked_at: Date | null }>(
+      `SELECT id, expires_at, revoked_at FROM auth_refresh_tokens WHERE token_hash = $1 FOR UPDATE`,
+      [tokenHash], client,
+    );
     if (!row) throw unauthorized('Invalid refresh token', 'INVALID_TOKEN');
-
     if (row.revoked_at) {
-      // A revoked token was presented again: treat it as token theft and
-      // revoke every session belonging to this user.
-      await client.query(
-        `UPDATE auth_refresh_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`,
-        [row.user_id],
-      );
-      logger.warn({ userId: row.user_id }, 'Refresh token reuse detected; all sessions revoked');
-      throw unauthorized('Refresh token has been revoked', 'INVALID_TOKEN');
+      // Commit revocation before returning the error: throwing in this
+      // transaction would roll the theft response back.
+      await client.query(`UPDATE auth_refresh_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`, [user.id]);
+      return { reused: true as const, userId: user.id };
     }
-
-    if (new Date(row.expires_at).getTime() <= Date.now()) {
-      throw unauthorized('Refresh token expired', 'TOKEN_EXPIRED');
-    }
-
-    await client.query(
-      `UPDATE auth_refresh_tokens SET revoked_at = now() WHERE id = $1`,
-      [row.id],
-    );
-
-    return row;
+    if (new Date(row.expires_at).getTime() <= Date.now()) throw unauthorized('Refresh token expired', 'TOKEN_EXPIRED');
+    if (user.status !== 'ACTIVE') throw unauthorized('This account has been disabled', 'ACCOUNT_DISABLED');
+    await enforceOwnerAccountBlock(user.id, client);
+    await client.query(`UPDATE auth_refresh_tokens SET revoked_at = now() WHERE id = $1`, [row.id]);
+    return { reused: false as const, session: await issueSession(user, client) };
   });
-
-  const user = await one<UserRow>(`SELECT ${USER_COLUMNS} FROM users WHERE id = $1`, [session.user_id]);
-  if (user.status !== 'ACTIVE') {
-    throw unauthorized('This account has been disabled', 'ACCOUNT_DISABLED');
+  if (result.reused) {
+    logger.warn({ userId: result.userId }, 'Refresh token reuse detected; all sessions revoked');
+    throw unauthorized('Refresh token has been revoked', 'INVALID_TOKEN');
   }
-
-  const newSession = await issueSession(user);
-  res.status(200).json(newSession);
+  res.status(200).json(result.session);
 }
 
 /** POST /api/auth/logout */
@@ -164,7 +160,15 @@ export async function changePassword(req: Request, res: Response): Promise<void>
   const newHash = await hashPassword(newPassword);
 
   await withTransaction(async (client) => {
-    await client.query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [newHash, user.id]);
+    // A concurrent password change must not overwrite a newer password after
+    // both requests validated the same old one.
+    const updated = await client.query(`UPDATE users SET password_hash = $1 WHERE id = $2 AND password_hash = $3`,
+      [newHash, user.id, user.password_hash]);
+    if (updated.rowCount !== 1) throw invalidCredentials();
+    if (env.PASSWORD_CHANGE_NOTIFICATIONS_ENABLED) {
+      await client.query(`INSERT INTO password_change_notifications (subject_user_id, actor_user_id, kind)
+        VALUES ($1, $1, 'SELF_CHANGE')`, [user.id]);
+    }
     // Force every other session to log in again with the new password.
     await client.query(
       `UPDATE auth_refresh_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`,

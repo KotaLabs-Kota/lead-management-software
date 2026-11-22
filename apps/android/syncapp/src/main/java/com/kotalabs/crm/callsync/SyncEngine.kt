@@ -5,7 +5,9 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.net.Uri
 import android.provider.CallLog
+import android.provider.ContactsContract
 import android.telecom.PhoneAccount
 import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
@@ -86,6 +88,16 @@ internal object SyncEngine {
         val delay = (5 * 60 * 1000L) * (1L shl (failures - 1)) + (0..30000).random()
         prefs.edit().putInt("failures", failures).putLong("retryAt", System.currentTimeMillis() + delay).apply()
     }
+    private fun contactName(context: Context, number: String): String? {
+        if (context.checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return null
+        return try {
+            val uri = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(number))
+            context.contentResolver.query(uri, arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (!cursor.moveToFirst() || cursor.isNull(0)) null
+                else cursor.getString(0)?.filterNot { it.isISOControl() }?.trim()?.take(150)?.trim()?.takeIf { it.isNotEmpty() }
+            }
+        } catch (_: Exception) { null } // A contacts failure must not block call sync.
+    }
     private fun scan(context: Context, enrollment: SecureStore.Enrollment, queue: Queue): Int {
         val fields = arrayOf(CallLog.Calls._ID, CallLog.Calls.NUMBER, CallLog.Calls.NUMBER_PRESENTATION,
             CallLog.Calls.TYPE, CallLog.Calls.DATE, CallLog.Calls.DURATION,
@@ -132,6 +144,10 @@ internal object SyncEngine {
                 val event = JSONObject().put("eventId", id).put("phoneNumber", number)
                     .put("direction", direction).put("source", "SIM").put("captureMethod", "CALL_LOG")
                     .put("startedAt", Instant.ofEpochMilli(started).toString())
+                val contactsSince = context.getSharedPreferences("sync_status", Context.MODE_PRIVATE).getLong("contactsSince", 0L)
+                if (SyncPolicy.contactNameAllowed(started, contactsSince)) {
+                    contactName(context, number)?.let { event.put("contactName", it) }
+                }
                 if (!c.isNull(durationCol) && c.getLong(durationCol) in 0..86400) event.put("durationSeconds", c.getLong(durationCol))
                 queue.add(id, event)
             }

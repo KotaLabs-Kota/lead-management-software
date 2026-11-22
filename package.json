@@ -16,7 +16,7 @@
     "db:seed": "npm run db:seed --workspace @kotalabs/backend"
   },
   "engines": {
-    "node": ">=20.11.0"
+    "node": "^20.19.0 || >=22.12.0"
   },
   "license": "UNLICENSED"
 }

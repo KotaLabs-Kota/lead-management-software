@@ -5,11 +5,12 @@
  */
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
+import jwt from 'jsonwebtoken';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createApp } from '../src/app';
 import { closePool } from '../src/db/pool';
-import { env } from '../src/config/env';
+import { corsOrigins, env } from '../src/config/env';
 import { seedUsers, startTestDatabase, stopTestDatabase } from './setup';
 
 const app = createApp();
@@ -69,6 +70,14 @@ describe('health', () => {
     expect(unlabelled.body.environment).toBeUndefined();
   });
 
+  it('rejects unapproved browser origins without reporting a server failure', async () => {
+    const blocked = await request(app).get('/api/health').set('Origin', 'https://untrusted.example').expect(403);
+    expect(blocked.body.error.code).toBe('FORBIDDEN');
+    expect(blocked.headers['access-control-allow-origin']).toBeUndefined();
+    const allowed = await request(app).get('/api/health').set('Origin', corsOrigins[0]!).expect(200);
+    expect(allowed.headers['access-control-allow-origin']).toBe(corsOrigins[0]);
+  });
+
   it('unknown route returns 404 JSON', async () => {
     const res = await request(app).get('/api/does-not-exist').expect(404);
     expect(res.body.error.code).toBe('NOT_FOUND');
@@ -111,18 +120,24 @@ describe('auth', () => {
       .send({ email: 'employee@test.local', password: 'EmployeePass123!' })
       .expect(200);
     const firstRefresh = loginRes.body.refreshToken as string;
+    const otherSession = await request(app).post('/api/auth/login')
+      .send({ email: 'employee@test.local', password: 'EmployeePass123!' }).expect(200);
 
     const refreshed = await request(app)
       .post('/api/auth/refresh')
       .send({ refreshToken: firstRefresh })
       .expect(200);
     expect(refreshed.body.refreshToken).not.toBe(firstRefresh);
+    const replacementRefresh = refreshed.body.refreshToken as string;
 
     // Reusing the rotated token is treated as theft and fails.
     await request(app)
       .post('/api/auth/refresh')
       .send({ refreshToken: firstRefresh })
       .expect(401);
+    // Reuse must revoke the new token, not roll the revocation back.
+    await request(app).post('/api/auth/refresh').send({ refreshToken: replacementRefresh }).expect(401);
+    await request(app).post('/api/auth/refresh').send({ refreshToken: otherSession.body.refreshToken }).expect(401);
   });
 
   it('logout revokes the refresh token', async () => {
@@ -626,6 +641,63 @@ describe('call events', () => {
     } finally { env.CALL_EVENT_AUTO_CREATE_LEAD = false; }
   });
 
+  it('uses a phone contact name for new calls without overwriting customer names', async () => {
+    env.CALL_EVENT_AUTO_CREATE_LEAD = true;
+    try {
+      const event = { eventId: randomUUID(), phoneNumber: '+919876000331', direction: 'INCOMING', source: 'SIM',
+        startedAt: '2026-11-21T14:00:00+05:30', contactName: '  Radha Sharma  ' };
+      const first = await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${deviceToken}`).send(event).expect(201);
+      const id = first.body.results[0].callEvent.leadId;
+      expect(first.body.results[0].callEvent.contactName).toBe('Radha Sharma');
+      const lead = await request(app).get(`/api/v1/leads/${id}`).set('Authorization', `Bearer ${adminToken}`).expect(200);
+      expect(lead.body.lead.customerName).toBe('Radha Sharma');
+      const retry = await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${deviceToken}`).send(event).expect(201);
+      expect(retry.body.summary.duplicates).toBe(1);
+      expect(retry.body.results[0].callEvent.contactName).toBe('Radha Sharma');
+      await request(app).patch(`/api/v1/leads/${id}`).set('Authorization', `Bearer ${adminToken}`).send({ customerName: 'CRM name' }).expect(200);
+      await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${deviceToken}`)
+        .send({ ...event, eventId: randomUUID(), contactName: 'Phone name' }).expect(201);
+      const after = await request(app).get(`/api/v1/leads/${id}`).set('Authorization', `Bearer ${adminToken}`).expect(200);
+      expect(after.body.lead.customerName).toBe('CRM name');
+      const calls = await request(app).get(`/api/v1/call-events?leadId=${id}`).set('Authorization', `Bearer ${employeeToken}`).expect(200);
+      expect(calls.body.callEvents.map((call: { contactName: string }) => call.contactName).sort()).toEqual(['Phone name', 'Radha Sharma']);
+      await request(app).get(`/api/v1/call-events?leadId=${id}`).set('Authorization', `Bearer ${employee2Token}`).expect(404);
+    } finally { env.CALL_EVENT_AUTO_CREATE_LEAD = false; }
+  });
+
+  it('fills an accessible Unknown caller placeholder on a later named call, but not another employee’s', async () => {
+    env.CALL_EVENT_AUTO_CREATE_LEAD = true;
+    try {
+      const event = { eventId: randomUUID(), phoneNumber: '+919876000332', direction: 'MISSED', source: 'SIM',
+        startedAt: '2026-11-21T14:00:00+05:30' };
+      const first = await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${deviceToken}`).send(event).expect(201);
+      const id = first.body.results[0].callEvent.leadId;
+      expect(first.body.results[0].callEvent.contactName).toBeNull();
+      await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${deviceToken}`)
+        .send({ ...event, eventId: randomUUID(), contact_name: 'Saved Name' }).expect(201);
+      let detail = await request(app).get(`/api/v1/leads/${id}`).set('Authorization', `Bearer ${adminToken}`).expect(200);
+      expect(detail.body.lead.customerName).toBe('Saved Name');
+      await request(app).patch(`/api/v1/leads/${id}`).set('Authorization', `Bearer ${adminToken}`)
+        .send({ customerName: 'Unknown caller', assignedUserId: employee2Id }).expect(200);
+      await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${deviceToken}`)
+        .send({ ...event, eventId: randomUUID(), contactName: 'Other Name' }).expect(201);
+      detail = await request(app).get(`/api/v1/leads/${id}`).set('Authorization', `Bearer ${adminToken}`).expect(200);
+      expect(detail.body.lead.customerName).toBe('Unknown caller');
+    } finally { env.CALL_EVENT_AUTO_CREATE_LEAD = false; }
+  });
+
+  it('rejects invalid contact names without creating calls', async () => {
+    env.CALL_EVENT_AUTO_CREATE_LEAD = true;
+    try {
+      const base = { phoneNumber: '+919876000333', direction: 'MISSED', source: 'SIM', startedAt: '2026-11-21T14:00:00+05:30' };
+      for (const contactName of ['', 'x'.repeat(161)]) {
+        const result = await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${deviceToken}`)
+          .send({ events: [{ ...base, eventId: randomUUID(), contactName }] }).expect(201);
+        expect(result.body.summary.failed).toBe(1);
+      }
+    } finally { env.CALL_EVENT_AUTO_CREATE_LEAD = false; }
+  });
+
   it('allows a device token to revoke only that device', async () => {
     const registration = await request(app).post('/api/v1/devices/register')
       .set('Authorization', `Bearer ${employeeToken}`)
@@ -765,6 +837,29 @@ describe('reports', () => {
     expect(empty.headers['x-export-has-more']).toBe('false');
   });
 
+  it('exports only filled lead fields to PDF while preserving filtering and access control', async () => {
+    await request(app).post('/api/v1/leads').set('Authorization', `Bearer ${adminToken}`)
+      .send({ customerName: 'PDF Customer', phone: '+919876000194', source: 'MANUAL',
+        email: 'test@example.com', city: 'Kota', notes: 'Follow up next week' }).expect(201);
+    const res = await request(app).get('/api/v1/reports/leads.pdf?search=PDF%20Customer')
+      .set('Authorization', `Bearer ${adminToken}`).expect(200);
+    expect(res.headers['x-export-row-count']).toBe('1');
+    const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    const pdf = await getDocument({ data: new Uint8Array(res.body), useSystemFonts: true }).promise;
+    const page = await pdf.getPage(1);
+    const content = await page.getTextContent();
+    const text = content.items.map((item) => 'str' in item ? item.str : '').join(' ');
+    expect(text).toContain('PDF Customer');
+    expect(text).toContain('test@example.com');
+    expect(text).toContain('Kota');
+    expect(text).toContain('Follow up next week');
+    expect(text).not.toContain('Alternate phone');
+    expect(text).not.toContain('Vehicle type');
+    await pdf.destroy();
+    await request(app).get('/api/v1/reports/leads.pdf?search=PDF%20Customer')
+      .set('Authorization', `Bearer ${employeeToken}`).expect(403);
+  });
+
   it('escapes spreadsheet formula prefixes in customer-entered CSV fields', async () => {
     await request(app).post('/api/v1/leads').set('Authorization', `Bearer ${adminToken}`)
       .send({ customerName: '=2+3', phone: '+919876000195', source: 'MANUAL' }).expect(201);
@@ -782,5 +877,265 @@ describe('reports', () => {
     expect(res.headers['content-type']).toContain('text/csv');
     expect(res.text).toContain('Lead Code');
     expect(res.text).toContain('Ramesh Kumar');
+  });
+});
+
+describe('password change notifications', () => {
+  let subjectId: string;
+  let subjectToken: string;
+  let otherAdminToken: string;
+  const auth = (token: string) => `Bearer ${token}`;
+  beforeAll(async () => {
+    env.PASSWORD_CHANGE_NOTIFICATIONS_ENABLED = true;
+    const subject = await request(app).post('/api/v1/users').set('Authorization', auth(adminToken))
+      .send({ name: 'Notification Employee', email: 'notification@test.local', password: 'OldPassword123!', role: 'EMPLOYEE' }).expect(201);
+    subjectId = subject.body.user.id;
+    subjectToken = await login('notification@test.local', 'OldPassword123!');
+    await request(app).post('/api/v1/users').set('Authorization', auth(adminToken))
+      .send({ name: 'Second Admin', email: 'secondadmin@test.local', password: 'SecondAdmin123!', role: 'ADMIN' }).expect(201);
+    otherAdminToken = await login('secondadmin@test.local', 'SecondAdmin123!');
+  });
+  afterAll(() => { env.PASSWORD_CHANGE_NOTIFICATIONS_ENABLED = false; });
+
+  it('denies employees and unauthenticated users and records only successful changes', async () => {
+    await request(app).get('/api/v1/notifications').expect(401);
+    await request(app).get('/api/v1/notifications').set('Authorization', auth(subjectToken)).expect(403);
+    await request(app).post('/api/auth/change-password').set('Authorization', auth(subjectToken))
+      .send({ currentPassword: 'wrong', newPassword: 'NewPassword123!' }).expect(401);
+    let result = await request(app).get('/api/v1/notifications').set('Authorization', auth(adminToken)).expect(200);
+    expect(result.body.unreadCount).toBe(0);
+    await request(app).post('/api/auth/change-password').set('Authorization', auth(subjectToken))
+      .send({ currentPassword: 'OldPassword123!', newPassword: 'NewPassword123!' }).expect(204);
+    await request(app).get('/api/auth/me').set('Authorization', auth(subjectToken)).expect(401);
+    result = await request(app).get('/api/v1/notifications').set('Authorization', auth(adminToken)).expect(200);
+    expect(result.body.unreadCount).toBe(1);
+    expect(result.body.notifications[0]).toMatchObject({ subjectName: 'Notification Employee', actorName: 'Notification Employee', kind: 'SELF_CHANGE', read: false });
+    expect(JSON.stringify(result.body)).not.toMatch(/OldPassword123|NewPassword123|password_hash/i);
+  });
+
+  it('records admin resets and maintains independent read status', async () => {
+    await request(app).patch(`/api/v1/users/${subjectId}`).set('Authorization', auth(adminToken))
+      .send({ password: 'ResetPassword123!' }).expect(200);
+    const list = await request(app).get('/api/v1/notifications').set('Authorization', auth(adminToken)).expect(200);
+    expect(list.body.unreadCount).toBe(2);
+    const reset = list.body.notifications.find((n: { kind: string }) => n.kind === 'ADMIN_RESET');
+    expect(reset).toMatchObject({ subjectName: 'Notification Employee', actorName: 'Test Admin', read: false });
+    expect(JSON.stringify(list.body)).not.toContain('ResetPassword123');
+    await request(app).post(`/api/v1/notifications/${reset.id}/read`).set('Authorization', auth(subjectToken)).expect(401);
+    const refreshedSubject = await login('notification@test.local', 'ResetPassword123!');
+    await request(app).post(`/api/v1/notifications/${reset.id}/read`).set('Authorization', auth(refreshedSubject)).expect(403);
+    await request(app).post(`/api/v1/notifications/${reset.id}/read`).set('Authorization', auth(adminToken)).expect(204);
+    await request(app).post(`/api/v1/notifications/${reset.id}/read`).set('Authorization', auth(adminToken)).expect(204);
+    const first = await request(app).get('/api/v1/notifications').set('Authorization', auth(adminToken)).expect(200);
+    const second = await request(app).get('/api/v1/notifications').set('Authorization', auth(otherAdminToken)).expect(200);
+    expect(first.body.unreadCount).toBe(1);
+    expect(second.body.unreadCount).toBe(2);
+    expect(second.body.notifications.find((n: { id: string }) => n.id === reset.id).read).toBe(false);
+    await request(app).post(`/api/v1/notifications/${randomUUID()}/read`).set('Authorization', auth(adminToken)).expect(404);
+    await request(app).get('/api/v1/notifications?page=0').set('Authorization', auth(adminToken)).expect(422);
+  });
+
+  it('records admin self changes and provides bounded pages', async () => {
+    await request(app).post('/api/auth/change-password').set('Authorization', auth(otherAdminToken))
+      .send({ currentPassword: 'SecondAdmin123!', newPassword: 'UpdatedAdmin123!' }).expect(204);
+    const { pool } = await import('../src/db/pool');
+    await pool.query(`INSERT INTO password_change_notifications (subject_user_id, actor_user_id, kind)
+      SELECT $1, $1, 'SELF_CHANGE' FROM generate_series(1, 20)`, [subjectId]);
+    const first = await request(app).get('/api/v1/notifications?page=1').set('Authorization', auth(adminToken)).expect(200);
+    const second = await request(app).get('/api/v1/notifications?page=2').set('Authorization', auth(adminToken)).expect(200);
+    expect(first.body.notifications).toHaveLength(20);
+    expect(first.body.hasMore).toBe(true);
+    expect(second.body.notifications).toHaveLength(3);
+    const all = [...first.body.notifications, ...second.body.notifications];
+    expect(all.some((n: { subjectName: string; kind: string }) => n.subjectName === 'Second Admin' && n.kind === 'SELF_CHANGE')).toBe(true);
+    expect(new Set(all.map((n: { id: string }) => n.id)).size).toBe(23);
+  });
+
+  it('rolls password changes back if notification storage fails', async () => {
+    const { pool } = await import('../src/db/pool');
+    await pool.query(`CREATE FUNCTION reject_notification() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'test failure'; END; $$ LANGUAGE plpgsql`);
+    await pool.query(`CREATE TRIGGER reject_notification BEFORE INSERT ON password_change_notifications FOR EACH ROW EXECUTE FUNCTION reject_notification()`);
+    try {
+      await request(app).patch(`/api/v1/users/${subjectId}`).set('Authorization', auth(adminToken))
+        .send({ password: 'ShouldNotWork123!' }).expect(500);
+      const resetToken = await login('notification@test.local', 'ResetPassword123!');
+      await request(app).post('/api/auth/change-password').set('Authorization', auth(resetToken))
+        .send({ currentPassword: 'ResetPassword123!', newPassword: 'ShouldNotWork123!' }).expect(500);
+      await login('notification@test.local', 'ResetPassword123!');
+      await request(app).post('/api/auth/login').send({ email: 'notification@test.local', password: 'ShouldNotWork123!' }).expect(401);
+    } finally {
+      await pool.query('DROP TRIGGER reject_notification ON password_change_notifications');
+      await pool.query('DROP FUNCTION reject_notification()');
+    }
+  });
+});
+
+
+describe('session security', () => {
+  it('rejects legacy access tokens that have no password version', async () => {
+    const legacy = jwt.sign({ role: 'ADMIN', tokenType: 'access' }, env.JWT_ACCESS_SECRET, {
+      issuer: env.JWT_ISSUER, audience: env.JWT_AUDIENCE, algorithm: 'HS256', subject: adminId, expiresIn: 3600,
+    });
+    await request(app).get('/api/auth/me').set('Authorization', `Bearer ${legacy}`).expect(401);
+  });
+
+  it('prevents a refresh racing a password reset from keeping a usable session', async () => {
+    const account = await request(app).post('/api/v1/users').set('Authorization', `Bearer ${adminToken}`)
+      .send({ name: 'Race Test', email: 'race@test.local', password: 'RaceOldPassword123!', role: 'EMPLOYEE' }).expect(201);
+    const session = await request(app).post('/api/auth/login')
+      .send({ email: 'race@test.local', password: 'RaceOldPassword123!' }).expect(200);
+    const [refresh, reset] = await Promise.all([
+      request(app).post('/api/auth/refresh').send({ refreshToken: session.body.refreshToken }),
+      request(app).patch(`/api/v1/users/${account.body.user.id}`).set('Authorization', `Bearer ${adminToken}`)
+        .send({ password: 'RaceNewPassword123!' }),
+    ]);
+    expect(reset.status).toBe(200);
+    expect([200, 401]).toContain(refresh.status);
+    await request(app).get('/api/auth/me').set('Authorization', `Bearer ${session.body.accessToken}`).expect(401);
+    if (refresh.status === 200) {
+      await request(app).get('/api/auth/me').set('Authorization', `Bearer ${refresh.body.accessToken}`).expect(401);
+      await request(app).post('/api/auth/refresh').send({ refreshToken: refresh.body.refreshToken }).expect(401);
+    }
+    await request(app).post('/api/auth/login').send({ email: 'race@test.local', password: 'RaceOldPassword123!' }).expect(401);
+    await login('race@test.local', 'RaceNewPassword123!');
+  });
+});
+
+describe('KotaLabs owner controls', () => {
+  const ownerKey = 'a'.repeat(64);
+  const owner = `Bearer ${ownerKey}`;
+  let targetId = '';
+  let targetAccess = '';
+  let targetRefresh = '';
+  let targetDevice = '';
+
+  it('is disabled by default, and rejects ordinary users and incorrect keys', async () => {
+    await request(app).get('/api/owner/status').expect(404);
+    env.OWNER_CONTROL_KEY = ownerKey;
+    env.OWNER_CONTROLS_ENABLED = true;
+    await request(app).get('/api/owner/status').set('Authorization', `Bearer ${adminToken}`).expect(401);
+    await request(app).get('/api/owner/status').set('Authorization', `Bearer ${'b'.repeat(64)}`).expect(401);
+    const status = await request(app).get('/api/owner/status').set('Authorization', owner).expect(200);
+    expect(status.headers['cache-control']).toBe('no-store');
+    expect(status.body.suspended).toBe(false);
+    expect(status.body.admins.some((a: { id: string }) => a.id === adminId)).toBe(true);
+  });
+
+  it('suspends all normal API access while health and authenticated owner recovery remain reachable', async () => {
+    await request(app).put('/api/owner/service').set('Authorization', owner).send({ suspended: true }).expect(200);
+    await request(app).get('/healthz').expect(200);
+    await request(app).get('/api/health').expect(200);
+    await request(app).get('/api/owner/status').set('Authorization', owner).expect(200);
+    await request(app).get('/api/v1/leads').set('Authorization', `Bearer ${adminToken}`).expect(503);
+    await request(app).post('/api/auth/login').send({ email: 'admin@test.local', password: 'AdminPass123!' }).expect(503);
+    await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${deviceToken}`).send({ events: [] }).expect(503);
+    await request(app).put('/api/owner/service').set('Authorization', `Bearer ${adminToken}`).send({ suspended: false }).expect(401);
+    await request(app).put('/api/owner/service').set('Authorization', owner).send({ suspended: false }).expect(200);
+    await request(app).get('/api/v1/leads').set('Authorization', `Bearer ${adminToken}`).expect(200);
+  });
+
+  it('blocks a specific admin across login, sessions and devices without disabling other users', async () => {
+    const created = await request(app).post('/api/v1/users').set('Authorization', `Bearer ${adminToken}`)
+      .send({ name: 'Owner test admin', email: 'owner-target@test.local', password: 'OwnerTarget123!', role: 'ADMIN' }).expect(201);
+    targetId = created.body.user.id;
+    const session = await request(app).post('/api/auth/login').send({ email: 'owner-target@test.local', password: 'OwnerTarget123!' }).expect(200);
+    targetAccess = session.body.accessToken; targetRefresh = session.body.refreshToken;
+    const device = await request(app).post('/api/v1/devices/register').set('Authorization', `Bearer ${targetAccess}`)
+      .send({ deviceName: 'Owner test phone', deviceCode: 'owner-test-device' }).expect(201);
+    targetDevice = device.body.deviceToken;
+    await request(app).put(`/api/owner/admins/${employeeId}`).set('Authorization', owner).send({ blocked: true }).expect(404);
+    await request(app).put(`/api/owner/admins/${targetId}`).set('Authorization', owner).send({ blocked: true }).expect(200);
+    await request(app).get('/api/auth/me').set('Authorization', `Bearer ${targetAccess}`).expect(503);
+    await request(app).post('/api/auth/login').send({ email: 'owner-target@test.local', password: 'OwnerTarget123!' }).expect(503);
+    await request(app).post('/api/auth/refresh').send({ refreshToken: targetRefresh }).expect(401);
+    await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${targetDevice}`).send({ events: [] }).expect(503);
+    await request(app).post('/api/v1/call-events').set('Authorization', `Bearer ${targetDevice}`).send({ events: [] }).expect(503);
+    await request(app).get('/api/auth/me').set('Authorization', `Bearer ${adminToken}`).expect(200);
+    // Another client admin cannot remove an owner block by changing user status.
+    await request(app).patch(`/api/v1/users/${targetId}`).set('Authorization', `Bearer ${adminToken}`).send({ status: 'ACTIVE' }).expect(200);
+    await request(app).get('/api/auth/me').set('Authorization', `Bearer ${targetAccess}`).expect(503);
+    await request(app).put(`/api/owner/admins/${targetId}`).set('Authorization', owner).send({ blocked: false }).expect(200);
+    await request(app).post('/api/auth/login').send({ email: 'owner-target@test.local', password: 'OwnerTarget123!' }).expect(200);
+    // The unblocked device credential is still valid; an empty batch reaches validation.
+    const oldGate = env.CALL_EVENT_AUTO_CREATE_LEAD;
+    env.CALL_EVENT_AUTO_CREATE_LEAD = true;
+    try {
+      await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${targetDevice}`).send({ events: [] }).expect(422);
+    } finally { env.CALL_EVENT_AUTO_CREATE_LEAD = oldGate; }
+  });
+
+  it('records only metadata and makes repeated changes idempotent', async () => {
+    const { pool } = await import('../src/db/pool');
+    await request(app).put('/api/owner/service').set('Authorization', owner).send({ suspended: false }).expect(200);
+    const audit = await pool.query('SELECT action, target_user_id FROM owner_control_audit ORDER BY created_at');
+    expect(audit.rows.map((row) => row.action)).toEqual(['SERVICE_SUSPENDED', 'SERVICE_RESUMED', 'ADMIN_BLOCKED', 'ADMIN_UNBLOCKED']);
+    expect(JSON.stringify(audit.rows)).not.toContain(ownerKey);
+    env.OWNER_CONTROL_KEY = undefined;
+    env.OWNER_CONTROLS_ENABLED = false;
+  });
+});
+
+describe('owner password login', () => {
+  const key = 'c'.repeat(64);
+  const authorization = `Bearer ${key}`;
+  const password = 'correct horse river sunset 927';
+  const replacement = 'another long secure owner phrase 42';
+  let session = '';
+
+  it('keeps password login opt-in and requires the independent recovery key for setup', async () => {
+    env.OWNER_CONTROL_KEY = key;
+    env.OWNER_CONTROLS_ENABLED = true;
+    await request(app).post('/api/owner/login').send({ password }).expect(404);
+    await request(app).put('/api/owner/password').set('Authorization', authorization).send({ password }).expect(404);
+    env.OWNER_PASSWORD_LOGIN_ENABLED = true;
+    await request(app).post('/api/owner/login').send({ password }).expect(401);
+    await request(app).put('/api/owner/password').set('Authorization', `Bearer ${adminToken}`).send({ password }).expect(401);
+    await request(app).put('/api/owner/password').set('Authorization', authorization).send({ password: '12345678901' }).expect(422);
+    await request(app).put('/api/owner/password').set('Authorization', authorization).send({ password: '            ' }).expect(422);
+    await request(app).put('/api/owner/password').set('Authorization', authorization).send({ password: 'aB9!xD7@uP2?' }).expect(200);
+    await request(app).post('/api/owner/login').send({ password: 'aB9!xD7@uP2?' }).expect(200);
+    await request(app).put('/api/owner/password').set('Authorization', authorization).send({ password }).expect(200);
+    const { pool } = await import('../src/db/pool');
+    const stored = await pool.query('SELECT password_hash FROM owner_password_login WHERE singleton');
+    expect(stored.rows[0].password_hash).toMatch(/^scrypt\$/);
+    expect(stored.rows[0].password_hash).not.toContain(password);
+  });
+  it('issues a separate short-lived owner session and rejects wrong credentials', async () => {
+    await request(app).post('/api/owner/login').send({ password: 'wrong password' }).expect(401);
+    const loginResponse = await request(app).post('/api/owner/login').send({ password }).expect(200);
+    session = loginResponse.body.token;
+    expect(loginResponse.body.expiresIn).toBe(900);
+    expect(session).not.toContain(password);
+    await request(app).get('/api/owner/status').set('Authorization', `Bearer ${session}`).expect(200);
+    await request(app).get('/api/v1/users').set('Authorization', `Bearer ${session}`).expect(401);
+    await request(app).put('/api/owner/password').set('Authorization', `Bearer ${session}`).send({ password: replacement }).expect(401);
+    await request(app).put('/api/owner/service').set('Authorization', `Bearer ${session}`).send({ suspended: true }).expect(200);
+    await request(app).get('/api/auth/me').set('Authorization', `Bearer ${adminToken}`).expect(503);
+    await request(app).put('/api/owner/service').set('Authorization', `Bearer ${session}`).send({ suspended: false }).expect(200);
+  });
+  it('invalidates old sessions after password reset or owner key rotation', async () => {
+    await request(app).put('/api/owner/password').set('Authorization', authorization).send({ password: replacement }).expect(200);
+    await request(app).get('/api/owner/status').set('Authorization', `Bearer ${session}`).expect(401);
+    await request(app).post('/api/owner/login').send({ password }).expect(401);
+    const loginResponse = await request(app).post('/api/owner/login').send({ password: replacement }).expect(200);
+    const newSession = loginResponse.body.token as string;
+    env.OWNER_CONTROL_KEY = 'd'.repeat(64);
+    await request(app).get('/api/owner/status').set('Authorization', `Bearer ${newSession}`).expect(401);
+    env.OWNER_CONTROL_KEY = key;
+    await request(app).get('/api/owner/status').set('Authorization', `Bearer ${newSession}`).expect(200);
+    // Repeated wrong passwords are throttled, but recovery-key access remains available.
+    let limited = false;
+    for (let i = 0; i < 6; i++) {
+      const attempt = await request(app).post('/api/owner/login').send({ password: 'definitely incorrect' });
+      if (attempt.status === 429) { limited = true; break; }
+      expect(attempt.status).toBe(401);
+    }
+    expect(limited).toBe(true);
+    await request(app).get('/api/owner/status').set('Authorization', authorization).expect(200);
+    env.OWNER_PASSWORD_LOGIN_ENABLED = false;
+    await request(app).get('/api/owner/status').set('Authorization', `Bearer ${newSession}`).expect(401);
+    await request(app).get('/api/owner/status').set('Authorization', authorization).expect(200);
+    env.OWNER_CONTROLS_ENABLED = false;
+    env.OWNER_CONTROL_KEY = undefined;
   });
 });
