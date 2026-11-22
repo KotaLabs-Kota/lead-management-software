@@ -1,16 +1,12 @@
-import PDFDocument from 'pdfkit';
-
 export interface PdfField { label: string; value: string | Date | null | undefined }
 export interface PdfLead { code: string; groups: Array<{ title: string; fields: PdfField[] }> }
 
-const colors = { ink: '#172554', muted: '#64748b', accent: '#4338ca', line: '#dbe3ef', pale: '#f6f8fc' };
 const margin = 40;
-const gap = 10;
-const valueSize = 9.5;
-const labelSize = 8;
-const lineHeight = 13;
-const cellPadding = 9;
-const labelHeight = 14;
+const gap = 22;
+const valueSize = 9;
+const lineHeight = 12;
+const headingHeight = 15;
+const leadGap = 8;
 
 function displayValue(value: PdfField['value']): string | null {
   if (value == null) return null;
@@ -52,82 +48,63 @@ function wrapValue(doc: PDFKit.PDFDocument, text: string, width: number): string
 }
 
 /**
- * Render a two-column, sectioned export. Only populated fields are included.
- * Page breaks are explicit, including for a single field longer than a page.
+ * Read down the left column, then the right. Short leads stay together where
+ * possible; a long lead continues with its code repeated at the next column.
  */
 export function renderLeadsPdf(doc: PDFKit.PDFDocument, leads: PdfLead[], offset: number, hasMore: boolean): void {
   const width = doc.page.width - margin * 2;
   const columnWidth = (width - gap) / 2;
   const bottom = doc.page.height - margin;
-  let y = margin;
+  const columnTop = margin + 48;
+  const normal = require.resolve('@expo-google-fonts/noto-sans-devanagari/400Regular/NotoSansDevanagari_400Regular.ttf');
+  const bold = require.resolve('@expo-google-fonts/noto-sans-devanagari/700Bold/NotoSansDevanagari_700Bold.ttf');
+  doc.registerFont('lead-regular', normal).registerFont('lead-bold', bold);
+  let column = 0;
+  let y = columnTop;
   let currentLead = '';
-
-  const text = (value: string, x: number, top: number, size: number, color: string) => {
-    doc.fontSize(size).fillColor(color).text(value, x, top, { lineBreak: false });
+  const x = () => margin + column * (columnWidth + gap);
+  const text = (value: string, left: number, top: number, size: number, font: string) => {
+    doc.font(font).fontSize(size).fillColor('#111827').text(value, left, top, { lineBreak: false });
   };
   const pageHeading = () => {
-    doc.rect(margin, y, width, 36).fill(colors.ink);
-    text('KotaLabs CRM  /  LEAD EXPORT', margin + 12, y + 10, 12, '#ffffff');
-    y += 45;
+    text('KotaLabs CRM - Lead export', margin, margin, 13, 'lead-bold');
+    const count = `Records ${offset + (leads.length ? 1 : 0)}-${offset + leads.length}`;
+    text(count, margin, margin + 20, 9, 'lead-regular');
+    if (hasMore) text('More records available in the next export batch', margin + 180, margin + 20, 9, 'lead-regular');
+    doc.save().strokeColor('#d1d5db').lineWidth(0.5)
+      .moveTo(margin + columnWidth + gap / 2, columnTop)
+      .lineTo(margin + columnWidth + gap / 2, bottom).stroke().restore();
+  };
+  const nextColumn = () => {
+    if (column === 0) column = 1;
+    else { doc.addPage(); column = 0; pageHeading(); }
+    y = columnTop;
   };
   const leadHeading = (continued = false) => {
-    text(`${currentLead}${continued ? '  (continued)' : ''}`, margin, y, 12, colors.accent);
-    y += 19;
-  };
-  const newPage = (continuing = true) => {
-    doc.addPage();
-    y = margin;
-    pageHeading();
-    if (continuing && currentLead) leadHeading(true);
+    text(`${currentLead}${continued ? ' (continued)' : ''}`, x(), y, 10, 'lead-bold');
+    y += headingHeight;
   };
   pageHeading();
-  text(`Records ${offset + (leads.length ? 1 : 0)}–${offset + leads.length}${hasMore ? '  ·  More records available in the next export batch' : ''}`, margin, y, 9, colors.muted);
-  y += 22;
-  if (!leads.length) text('No leads match these filters.', margin, y, 10, colors.muted);
+  if (!leads.length) text('No leads match these filters.', x(), y, 9, 'lead-regular');
 
   for (const lead of leads) {
     currentLead = lead.code;
-    // Keep a heading and the start of its first section together.
-    if (y + 90 > bottom) newPage(false);
+    doc.font('lead-regular').fontSize(valueSize);
+    const lines = lead.groups.flatMap((group) => group.fields.flatMap((field) => {
+      const value = displayValue(field.value);
+      return value === null ? [] : wrapValue(doc, `${field.label}: ${value}`, columnWidth);
+    }));
+    const required = headingHeight + lines.length * lineHeight;
+    const capacity = bottom - columnTop;
+    // Keep a short lead together rather than orphaning its heading. Long leads
+    // can span columns, so no entered text is truncated.
+    if ((required <= capacity && y + required > bottom) || y + headingHeight + lineHeight > bottom) nextColumn();
     leadHeading();
-    for (const group of lead.groups) {
-      const fields = group.fields.flatMap((field) => {
-        const value = displayValue(field.value);
-        return value === null ? [] : [{ label: field.label, value }];
-      });
-      if (!fields.length) continue;
-      if (y + 65 > bottom) newPage();
-      text(group.title.toUpperCase(), margin, y, 8, colors.muted);
-      y += 15;
-      for (let i = 0; i < fields.length; i += 2) {
-        const row = fields.slice(i, i + 2).map((field) => {
-          doc.fontSize(valueSize);
-          return { label: field.label, lines: wrapValue(doc, field.value, columnWidth - cellPadding * 2) };
-        });
-        let lineOffset = 0;
-        const totalLines = Math.max(...row.map((field) => field.lines.length));
-        while (lineOffset < totalLines) {
-          const availableLines = Math.floor((bottom - y - labelHeight - cellPadding * 2) / lineHeight);
-          if (availableLines < 1) { newPage(); continue; }
-          const lineCount = Math.min(availableLines, totalLines - lineOffset);
-          const height = labelHeight + cellPadding * 2 + lineCount * lineHeight;
-          row.forEach((field, index) => {
-            // A finished shorter field is not repeated on continuation pages.
-            const lines = field.lines.slice(lineOffset, lineOffset + lineCount);
-            if (!lines.length) return;
-            const x = margin + index * (columnWidth + gap);
-            doc.save().roundedRect(x, y, columnWidth, height, 4).fillAndStroke(colors.pale, colors.line).restore();
-            text(`${field.label}${lineOffset ? ' (continued)' : ''}`, x + cellPadding, y + cellPadding, labelSize, colors.muted);
-            lines.forEach((line, lineIndex) => text(line || ' ', x + cellPadding, y + cellPadding + labelHeight + lineIndex * lineHeight, valueSize, colors.ink));
-          });
-          y += height + 5;
-          lineOffset += lineCount;
-          if (lineOffset < totalLines) newPage();
-        }
-      }
-      y += 6;
+    for (const line of lines) {
+      if (y + lineHeight > bottom) { nextColumn(); leadHeading(true); }
+      text(line || ' ', x(), y, valueSize, 'lead-regular');
+      y += lineHeight;
     }
-    doc.moveTo(margin, y).lineTo(margin + width, y).strokeColor(colors.line).stroke();
-    y += 17;
+    y += leadGap;
   }
 }

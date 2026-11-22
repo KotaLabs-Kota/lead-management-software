@@ -44,7 +44,7 @@ const baseLead: PdfLead = {
 };
 
 describe('lead PDF layout', () => {
-  it('prints only populated fields in two columns with readable IST dates', async () => {
+  it('prints only populated fields with readable IST dates', async () => {
     const result = await pages(await pdf([baseLead]));
     const content = result[0]!;
     const all = content.map((item) => item.str).join(' ');
@@ -56,14 +56,22 @@ describe('lead PDF layout', () => {
     expect(all).not.toContain('City');
     expect(all).toContain('22 Nov 2026');
     expect(all).toContain('IST');
-    const name = content.find((item) => item.str === 'Customer name')!;
-    const phone = content.find((item) => item.str === 'Phone')!;
-    expect(phone.x - name.x).toBeGreaterThan(150);
-    expect(phone.y).toBeCloseTo(name.y, 1);
+    expect(all).toContain('Customer name: Ramesh Kumar');
+    expect(all).toContain('Phone: +91 98765 43210');
+  });
+
+  it('packs separate short leads in both columns on the same page', async () => {
+    const leads = Array.from({ length: 10 }, (_, index) => ({ ...baseLead, code: `MMB-${String(index + 1).padStart(6, '0')}` }));
+    const result = await pages(await pdf(leads));
+    expect(result).toHaveLength(1);
+    const headings = result[0]!.filter((item) => /^MMB-\d{6}$/.test(item.str));
+    expect(headings).toHaveLength(10);
+    expect(headings[0]!.x).toBeLessThan(100);
+    expect(headings[9]!.x).toBeGreaterThan(250);
   });
 
   it('keeps long fields and multiple leads within page bounds without losing their endings', async () => {
-    const note = Array.from({ length: 400 }, (_, i) => `word${i}`).join(' ');
+    const note = Array.from({ length: 1200 }, (_, i) => `word${i}`).join(' ');
     const longLead: PdfLead = { code: 'MMB-000002', groups: [{ title: 'Details', fields: [
       { label: 'Notes', value: note }, { label: 'Requirement', value: 'One more detail' },
     ] }] };
@@ -71,7 +79,7 @@ describe('lead PDF layout', () => {
     expect(result.length).toBeGreaterThan(1);
     const all = result.flat().map((item) => item.str).join(' ');
     expect(all).toContain('word0');
-    expect(all).toContain('word399');
+    expect(all).toContain('word1199');
     expect(all).toContain('MMB-000002');
     expect(all).toContain('MMB-000001');
     expect(all).toContain('continued');
@@ -93,7 +101,7 @@ describe('lead PDF layout', () => {
     const text = result.flat().map((item) => item.str).join(' ');
     expect(text).toContain('रमेश');
     expect(text).toContain('ENDMARKER');
-    expect(result.flat().filter((item) => item.str.startsWith('X')).map((item) => item.str).join('').match(/X/g)).toHaveLength(1500);
+    expect(result.flat().filter((item) => item.str.startsWith('X') || item.str.startsWith('Notes: ')).map((item) => item.str).join('').match(/X/g)).toHaveLength(1500);
   });
 
   it('renders an empty export clearly', async () => {
