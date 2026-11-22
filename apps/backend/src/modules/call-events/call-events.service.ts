@@ -20,6 +20,7 @@ interface CallEventRow {
   device_id: string | null;
   user_id: string;
   phone_number: string;
+  contact_name: string | null;
   direction: string | null;
   source: string;
   capture_method: string | null;
@@ -36,7 +37,7 @@ interface CallEventRow {
 const SELECT_CALL_EVENT = `
   SELECT ce.id, ce.event_id, ce.lead_id, ce.device_id, ce.user_id, ce.phone_number,
          ce.direction, ce.source, ce.capture_method, ce.started_at, ce.duration_seconds,
-         ce.sim_slot, ce.notes, ce.created_at,
+         ce.sim_slot, ce.notes, ce.created_at, ce.raw_payload->>'contactName' AS contact_name,
          l.lead_number, u.name AS user_name, d.device_name
     FROM call_events ce
     LEFT JOIN leads l ON l.id = ce.lead_id
@@ -54,6 +55,7 @@ function publicCallEvent(event: CallEventRow) {
     userId: event.user_id,
     userName: event.user_name,
     phoneNumber: event.phone_number,
+    contactName: event.contact_name,
     direction: event.direction,
     source: event.source,
     captureMethod: event.capture_method,
@@ -139,8 +141,8 @@ async function ingestEvent(
         );
         const lead = await one<{ id: string }>(
           `INSERT INTO leads (customer_name, phone, source, source_detail, assigned_user_id, created_by)
-           VALUES ('Unknown caller', $1, 'PHONE_CALL', $2, $3, $3) RETURNING id`,
-          [phoneNumber, previous ? 'Returning contact' : null, actor.userId], client,
+           VALUES ($4, $1, 'PHONE_CALL', $2, $3, $3) RETURNING id`,
+          [phoneNumber, previous ? 'Returning contact' : null, actor.userId, input.contactName ?? 'Unknown caller'], client,
         );
         leadId = lead.id;
         await client.query(
@@ -155,15 +157,24 @@ async function ingestEvent(
       const lead = await maybeOne<{ id: string }>(`SELECT id FROM leads WHERE id = $1`, [leadId], client);
       if (!lead) throw validationError(`leadId ${leadId} does not reference an existing lead`);
     }
+    if (leadId && actor.deviceId && input.contactName) {
+      // Fill only auto-created placeholders visible to the caller, not names
+      // entered by CRM users and not another employee's assigned lead.
+      await client.query(`UPDATE leads SET customer_name = $1
+        WHERE id = $2 AND source = 'PHONE_CALL' AND customer_name = 'Unknown caller'
+          AND (assigned_user_id = $3 OR assigned_user_id IS NULL OR
+               EXISTS (SELECT 1 FROM users WHERE id = $3 AND role = 'ADMIN'))`,
+      [input.contactName, leadId, actor.userId]);
+    }
     const deviceId = actor.deviceId ?? input.deviceId ?? null;
     const row = await one<CallEventRow>(
       `INSERT INTO call_events (
          event_id, lead_id, device_id, user_id, phone_number, direction, source,
-         capture_method, started_at, duration_seconds, sim_slot, notes
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         capture_method, started_at, duration_seconds, sim_slot, notes, raw_payload
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        RETURNING id, event_id, lead_id, device_id, user_id, phone_number, direction,
                  source, capture_method, started_at, duration_seconds, sim_slot, notes,
-                 created_at, NULL::bigint AS lead_number, NULL::text AS user_name,
+                 created_at, raw_payload->>'contactName' AS contact_name, NULL::bigint AS lead_number, NULL::text AS user_name,
                  NULL::text AS device_name`,
       [
         input.eventId,
@@ -178,6 +189,7 @@ async function ingestEvent(
         input.durationSeconds ?? null,
         input.simSlot ?? null,
         input.notes ?? null,
+        input.contactName ? JSON.stringify({ contactName: input.contactName }) : null,
       ],
       client,
     );

@@ -626,6 +626,63 @@ describe('call events', () => {
     } finally { env.CALL_EVENT_AUTO_CREATE_LEAD = false; }
   });
 
+  it('uses a phone contact name for new calls without overwriting customer names', async () => {
+    env.CALL_EVENT_AUTO_CREATE_LEAD = true;
+    try {
+      const event = { eventId: randomUUID(), phoneNumber: '+919876000331', direction: 'INCOMING', source: 'SIM',
+        startedAt: '2026-11-21T14:00:00+05:30', contactName: '  Radha Sharma  ' };
+      const first = await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${deviceToken}`).send(event).expect(201);
+      const id = first.body.results[0].callEvent.leadId;
+      expect(first.body.results[0].callEvent.contactName).toBe('Radha Sharma');
+      const lead = await request(app).get(`/api/v1/leads/${id}`).set('Authorization', `Bearer ${adminToken}`).expect(200);
+      expect(lead.body.lead.customerName).toBe('Radha Sharma');
+      const retry = await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${deviceToken}`).send(event).expect(201);
+      expect(retry.body.summary.duplicates).toBe(1);
+      expect(retry.body.results[0].callEvent.contactName).toBe('Radha Sharma');
+      await request(app).patch(`/api/v1/leads/${id}`).set('Authorization', `Bearer ${adminToken}`).send({ customerName: 'CRM name' }).expect(200);
+      await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${deviceToken}`)
+        .send({ ...event, eventId: randomUUID(), contactName: 'Phone name' }).expect(201);
+      const after = await request(app).get(`/api/v1/leads/${id}`).set('Authorization', `Bearer ${adminToken}`).expect(200);
+      expect(after.body.lead.customerName).toBe('CRM name');
+      const calls = await request(app).get(`/api/v1/call-events?leadId=${id}`).set('Authorization', `Bearer ${employeeToken}`).expect(200);
+      expect(calls.body.callEvents.map((call: { contactName: string }) => call.contactName).sort()).toEqual(['Phone name', 'Radha Sharma']);
+      await request(app).get(`/api/v1/call-events?leadId=${id}`).set('Authorization', `Bearer ${employee2Token}`).expect(404);
+    } finally { env.CALL_EVENT_AUTO_CREATE_LEAD = false; }
+  });
+
+  it('fills an accessible Unknown caller placeholder on a later named call, but not another employee’s', async () => {
+    env.CALL_EVENT_AUTO_CREATE_LEAD = true;
+    try {
+      const event = { eventId: randomUUID(), phoneNumber: '+919876000332', direction: 'MISSED', source: 'SIM',
+        startedAt: '2026-11-21T14:00:00+05:30' };
+      const first = await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${deviceToken}`).send(event).expect(201);
+      const id = first.body.results[0].callEvent.leadId;
+      expect(first.body.results[0].callEvent.contactName).toBeNull();
+      await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${deviceToken}`)
+        .send({ ...event, eventId: randomUUID(), contact_name: 'Saved Name' }).expect(201);
+      let detail = await request(app).get(`/api/v1/leads/${id}`).set('Authorization', `Bearer ${adminToken}`).expect(200);
+      expect(detail.body.lead.customerName).toBe('Saved Name');
+      await request(app).patch(`/api/v1/leads/${id}`).set('Authorization', `Bearer ${adminToken}`)
+        .send({ customerName: 'Unknown caller', assignedUserId: employee2Id }).expect(200);
+      await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${deviceToken}`)
+        .send({ ...event, eventId: randomUUID(), contactName: 'Other Name' }).expect(201);
+      detail = await request(app).get(`/api/v1/leads/${id}`).set('Authorization', `Bearer ${adminToken}`).expect(200);
+      expect(detail.body.lead.customerName).toBe('Unknown caller');
+    } finally { env.CALL_EVENT_AUTO_CREATE_LEAD = false; }
+  });
+
+  it('rejects invalid contact names without creating calls', async () => {
+    env.CALL_EVENT_AUTO_CREATE_LEAD = true;
+    try {
+      const base = { phoneNumber: '+919876000333', direction: 'MISSED', source: 'SIM', startedAt: '2026-11-21T14:00:00+05:30' };
+      for (const contactName of ['', 'x'.repeat(161)]) {
+        const result = await request(app).post('/api/v1/call-sync/events').set('Authorization', `Bearer ${deviceToken}`)
+          .send({ events: [{ ...base, eventId: randomUUID(), contactName }] }).expect(201);
+        expect(result.body.summary.failed).toBe(1);
+      }
+    } finally { env.CALL_EVENT_AUTO_CREATE_LEAD = false; }
+  });
+
   it('allows a device token to revoke only that device', async () => {
     const registration = await request(app).post('/api/v1/devices/register')
       .set('Authorization', `Bearer ${employeeToken}`)

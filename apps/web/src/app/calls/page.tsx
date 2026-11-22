@@ -199,7 +199,7 @@ export default function CallsPage() {
                         {call.direction ?? 'Unknown'}
                       </span>
                     </td>
-                    <td className="px-3 py-3 font-medium text-slate-900">{formatPhone(call.phoneNumber)}</td>
+                    <td className="px-3 py-3 font-medium text-slate-900">{call.contactName ? <div>{call.contactName} <span className="text-xs font-normal text-slate-500">(phone contact)</span></div> : null}{formatPhone(call.phoneNumber)}</td>
                     <td className="px-3 py-3 text-slate-700">{call.source}</td>
                     <td className="px-3 py-3 text-right">{formatDuration(call.durationSeconds)}</td>
                     <td className="px-3 py-3 text-slate-700">{call.userName ?? '—'}</td>

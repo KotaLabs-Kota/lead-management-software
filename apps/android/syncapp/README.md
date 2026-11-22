@@ -23,3 +23,17 @@ Google Play places significant restrictions on call-log permissions; distributio
 On Android 12 and later, Android requires the Phone number permission to query phone-account details used to identify a SIM account. The app does not read the device owner’s phone number. Phone-account access can still be unavailable on some devices.
 
 For a browser preview, configure `BACKEND_URL` specifically for the test branch and verify that the preview proxies to the isolated backend before signing in or editing data. The optional backend `HEALTH_ENVIRONMENT_LABEL=crm-call-test` adds a **public, non-secret** `environment` field to health responses to help distinguish the test service. Set the test backend's `CORS_ORIGINS` to the exact HTTPS preview origin if proxying forwards the browser Origin header. A frontend `NEXT_PUBLIC_API_URL`, if set, can override the relative proxy and must also be checked. A label is not proof of database identity; separately verify that the backend connects to the intended test database.
+
+### Optional saved contact names
+
+The test app offers a separate, optional consent and Android Contacts permission.
+After consent, for each eligible new SIM call it looks up that number on the phone
+and sends only the matching saved display name with that call, not the address
+book. Names can include personal contacts and are visible to CRM users permitted
+to see the call. Call sync continues without names if permission is denied or the
+lookup fails. Earlier calls are not backfilled. Disable the option in the app or
+revoke Contacts permission in Android settings; names already queued or sent are
+not automatically removed. Use Stop and remove local data to delete the local
+queue. On the backend, a name fills a new lead or an accessible call-created
+`Unknown caller` placeholder, but never replaces another customer name. The call
+history shows the phone's saved name separately from the lead name.

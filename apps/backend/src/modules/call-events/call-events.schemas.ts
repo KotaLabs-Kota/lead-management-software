@@ -13,6 +13,7 @@ import {
 const SNAKE_TO_CAMEL: Record<string, string> = {
   event_id: 'eventId',
   phone_number: 'phoneNumber',
+  contact_name: 'contactName',
   call_type: 'direction',
   call_timestamp: 'startedAt',
   duration_seconds: 'durationSeconds',
@@ -35,6 +36,8 @@ export const callEventSchema = z.object({
   /** Client-generated UUID — the idempotency key for retries. */
   eventId: z.string().uuid('eventId must be a UUID'),
   phoneNumber: z.string().trim().min(7, 'phoneNumber is required').max(30),
+  /** Optional name saved on the syncing phone; never a full contacts upload. */
+  contactName: z.string().trim().min(1).max(160).nullable().optional(),
   direction: z.enum(CALL_DIRECTIONS).default('UNKNOWN'),
   source: z.enum(CALL_SOURCES).default('SIM'),
   captureMethod: z.enum(CALL_CAPTURE_METHODS).optional(),

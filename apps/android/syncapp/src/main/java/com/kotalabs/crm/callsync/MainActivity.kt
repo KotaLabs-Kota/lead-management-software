@@ -88,6 +88,29 @@ class MainActivity : Activity() {
                         }.show()
                 })
             }
+            val contactConsent = getSharedPreferences("sync_status", MODE_PRIVATE).getLong("contactsSince", 0L) > 0
+            if (contactConsent) {
+                val permitted = checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+                root.addView(text(if (permitted) "Saved-name sync is on for new calls." else "Saved-name sync is paused: Contacts permission is not granted."))
+                if (!permitted) root.addView(button("Restore Contacts permission") { requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS), 13) })
+                root.addView(button("Stop saved-name sync") {
+                    AlertDialog.Builder(this).setMessage("Stop looking up names for new calls? Previously sent names stay in the CRM, and already queued calls may still include names. Stop and remove local data to delete the unsent queue.")
+                        .setNegativeButton("Cancel", null).setPositiveButton("Stop names") { _, _ ->
+                            synchronized(SyncEngine.lock) { getSharedPreferences("sync_status", MODE_PRIVATE).edit().remove("contactsSince").commit() }
+                            render()
+                        }.show()
+                })
+            } else {
+                root.addView(text("Optional: share the saved contact name for future calls with your company CRM. This may include personal contact names. Only the matching name and number for an eligible call are sent; the full address book is not uploaded. Existing names in the CRM are not replaced. Previously sent call details remain in the CRM."))
+                root.addView(button("Enable saved-name sync") {
+                    AlertDialog.Builder(this).setTitle("Share saved contact names?")
+                        .setMessage("Allow this app to access Contacts and send the matching saved name for future eligible SIM calls to your company CRM? Calls may include personal contacts. This is optional and call sync works without it.")
+                        .setNegativeButton("Not now", null).setPositiveButton("I agree") { _, _ ->
+                            if (checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) enableContactSync()
+                            else { permissionPending = true; requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS), 13) }
+                        }.show()
+                })
+            }
             root.addView(text("Android may delay background work. A local check is requested after call-log changes and roughly every five minutes. No request is sent when there are no queued calls. Private numbers and calls without an identifiable SIM account are skipped."))
             val missing = requiredPermissions().filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
             if (missing.isNotEmpty()) root.addView(button("Restore call permissions") { requestPermissions(missing.toTypedArray(), 12) })
@@ -118,6 +141,12 @@ class MainActivity : Activity() {
     @Deprecated("Platform permission callback")
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 13) {
+            permissionPending = false
+            if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) enableContactSync()
+            else { message("Contacts permission was not granted. Call sync can continue without saved names."); render() }
+            return
+        }
         if (requestCode == 12) {
             if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
                 Scheduler.ensure(this); Scheduler.manual(this)
@@ -129,6 +158,13 @@ class MainActivity : Activity() {
         permissionPending = false
         if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) enroll()
         else message("Call logs and the requested Phone permissions are needed to identify SIM calls. You can change them in Android Settings.")
+    }
+    private fun enableContactSync() {
+        synchronized(SyncEngine.lock) {
+            val prefs = getSharedPreferences("sync_status", MODE_PRIVATE)
+            if (prefs.getLong("contactsSince", 0L) == 0L) prefs.edit().putLong("contactsSince", System.currentTimeMillis()).commit()
+        }
+        Scheduler.ensure(this); Scheduler.manual(this); render()
     }
     private fun enroll() {
         val username = email.text.toString().trim()

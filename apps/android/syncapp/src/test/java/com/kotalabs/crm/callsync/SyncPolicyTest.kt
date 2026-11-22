@@ -28,6 +28,12 @@ class SyncPolicyTest {
         assertTrue(SyncPolicy.outgoingAllowed(1001L, 1000L))
     }
 
+    @Test fun contactNamesRequireSeparateConsentAndNeverBackfill() {
+        assertFalse(SyncPolicy.contactNameAllowed(1000L, 0L))
+        assertFalse(SyncPolicy.contactNameAllowed(999L, 1000L))
+        assertTrue(SyncPolicy.contactNameAllowed(1000L, 1000L))
+    }
+
     @Test fun noPendingCallsMeansNoRequestAndBatchesAreBounded() {
         assertTrue(SyncPolicy.nextBatch(emptyList()).isEmpty())
         val calls = List(120) { UUID.randomUUID() }
