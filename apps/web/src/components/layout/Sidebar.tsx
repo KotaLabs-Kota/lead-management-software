@@ -33,14 +33,14 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/settings', label: 'Settings', icon: Settings },
 ];
 
-export function Sidebar() {
+export function Sidebar({ open, onNavigate }: { open: boolean; onNavigate: () => void }) {
   const pathname = usePathname();
   const { user, logout } = useAuth();
 
   const items = NAV_ITEMS.filter((item) => !item.adminOnly || user?.role === 'ADMIN');
 
   return (
-    <aside className="flex w-60 shrink-0 flex-col bg-slate-900 text-slate-200">
+    <aside className={`fixed inset-y-0 left-0 z-50 w-60 shrink-0 flex-col overflow-y-auto bg-slate-900 text-slate-200 transition-transform lg:sticky lg:top-0 lg:h-screen lg:translate-x-0 ${open ? 'flex translate-x-0' : 'hidden lg:flex'}`}>
       <div className="border-b border-slate-800 px-5 py-5">
         <p className="text-lg font-bold text-white">KotaLabs CRM</p>
         <p className="text-xs text-slate-400">Multani Motor Body Makers</p>
@@ -55,6 +55,7 @@ export function Sidebar() {
             <Link
               key={item.href}
               href={item.href}
+              onClick={onNavigate}
               className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
                 active
                   ? 'bg-indigo-600 text-white'

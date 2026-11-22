@@ -1,0 +1,18 @@
+# Earlier design notes
+
+The separate `syncapp` module now implements an experimental version; see `syncapp/README.md` for current behavior and testing prerequisites. The original diagnostic `app` remains local-only.
+
+# Call sync work in progress — not active in the diagnostic app
+
+The currently installable app is still local-only; it does not register a device or send calls. Do not use this unfinished design for production.
+
+## Low-load approach
+
+- After explicit, informed consent and enrollment, detect changes to the device call log and schedule a debounced scan. Also request a local fallback check about five minutes after the previous check. Android may delay or suppress background work due to Doze, battery policy, app force-stop, or vendor restrictions; five minutes is a target, not a guarantee. A persistent Android periodic job alone has a 15-minute minimum. Re-establish scheduled work after reboot and after permission changes, with a manual sync option.
+- Scan locally and send **nothing** if no eligible new events or retryable queued records exist; never poll the CRM for changes and never send empty heartbeats. Send multiple queued records in a single bounded request (server accepts up to 500). Retry network failures with backoff and jitter, not a fixed aggressive loop, and pause/report revoked credentials.
+- Store the installation/registration scope and durable queue safely before uploading. Each row has one persistent event UUID across retries. The server accepts duplicate UUIDs idempotently. Remove a queued item only after its own created/duplicate acknowledgement has been durably recorded; partial success and permanent validation errors need distinct handling. Do not advance a scan cursor past an event that has not been durably queued. Account for calls logged late and clock changes; never rely on a naive latest-timestamp-only cursor.
+- Android call logs may include third-party or unknown call sources. Do not label them SIM based solely on being in the call log. Establish and test a reliable platform-specific filter, or show an explicit unknown/skipped status; WhatsApp is outside scope. Private/invalid numbers cannot create a phone-matched lead. Do not infer records the phone did not log.
+
+## Required before activation
+
+Consent and clear disclosure, HTTPS-only endpoint handling, secure enrollment and Android Keystore-backed token protection, encrypted local queue and backup exclusion, explicit stop/revoke flow, database/server access controls, real-device background and multi-SIM tests, offline/partial-failure/reboot/force-stop tests, release signing and an appropriate distribution policy. Google Play restricts call-log permissions. The isolated `SyncPolicy` class only defines batch, acknowledgement and stable-ID rules. `CredentialVault` is an unwired Android Keystore-backed credential storage primitive. Neither implements enrollment, a scheduler, a queue, or a network client. Vault behavior needs on-device tests including key loss and data tampering before activation.

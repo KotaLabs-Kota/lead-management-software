@@ -12,6 +12,8 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(4000),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
+  // Optional, public identifier for distinguishing test and live health checks.
+  HEALTH_ENVIRONMENT_LABEL: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional(),
 
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(50).default(10),
@@ -35,6 +37,10 @@ const envSchema = z.object({
   AUTH_RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().default(20),
 
   DEFAULT_COUNTRY_CODE: z.string().length(2).default('IN'),
+  CALL_EVENT_AUTO_CREATE_LEAD: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
   CALL_EVENT_AUTO_LINK_LEAD: z
     .enum(['true', 'false'])
     .default('true')

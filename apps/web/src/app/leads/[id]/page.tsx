@@ -10,6 +10,7 @@ import { ApiError, type CallEvent, type Followup, type Lead, type LeadActivity, 
 import { formatDateTime, formatDuration, formatPhone, isoToLocalInput, localInputToIso, timeAgo } from '@/lib/format';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
+import { CallDevice } from '@/components/devices/CallDevice';
 import { Field, Input, Select, Textarea } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { ErrorState, Spinner } from '@/components/ui/States';
@@ -33,7 +34,7 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
 
   const leadQuery = useQuery({
     queryKey: ['lead', id],
-    queryFn: () => apiGet<{ lead: Lead }>(`/api/v1/leads/${id}`),
+    queryFn: () => apiGet<{ lead: Lead; previousLeads?: Array<{ id: string; leadCode: string; customerName: string; status: LeadStatus; createdAt: string }> }>(`/api/v1/leads/${id}`),
   });
   const activitiesQuery = useQuery({
     queryKey: ['lead-activities', id],
@@ -169,6 +170,23 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
             </dl>
           </Card>
 
+          {leadQuery.data?.previousLeads?.length ? (
+            <Card title="Returning contact · previous leads">
+              <p className="mb-3 text-sm text-slate-500">Earlier leads with this phone number that you can access.</p>
+              <ul className="space-y-2 text-sm">
+                {leadQuery.data.previousLeads.map((previous) => (
+                  <li key={previous.id} className="flex flex-wrap items-center gap-2">
+                    <Link href={`/leads/${previous.id}`} className="font-medium text-indigo-600 hover:underline">
+                      {previous.leadCode} · {previous.customerName}
+                    </Link>
+                    <StatusBadge status={previous.status} />
+                    <span className="text-slate-500">{formatDateTime(previous.createdAt)}</span>
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          ) : null}
+
           <Card
             title="Activity timeline"
             action={
@@ -205,17 +223,21 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
           <Card title={`Call history (${leadCalls.length})`}>
             {callsQuery.isPending ? (
               <Spinner />
+            ) : callsQuery.isError ? (
+              <ErrorState message="Could not load call history." onRetry={() => void callsQuery.refetch()} />
             ) : leadCalls.length === 0 ? (
               <p className="text-sm text-slate-500">No calls recorded for this lead yet.</p>
             ) : (
-              <table className="w-full text-sm">
+              <div className="overflow-x-auto">
+              <table className="w-full min-w-[760px] text-sm">
                 <thead>
                   <tr className="text-left text-xs uppercase tracking-wide text-slate-500">
                     <th className="pb-2 font-medium">When</th>
                     <th className="pb-2 font-medium">Direction</th>
                     <th className="pb-2 font-medium">Source</th>
                     <th className="pb-2 text-right font-medium">Duration</th>
-                    <th className="pb-2 font-medium">By</th>
+                    <th className="pb-2 pl-4 font-medium">By</th>
+                    <th className="pb-2 pl-4 font-medium">Phone</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -230,11 +252,13 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
                       </td>
                       <td className="py-2 text-slate-700">{call.source}</td>
                       <td className="py-2 text-right">{formatDuration(call.durationSeconds)}</td>
-                      <td className="py-2 text-slate-700">{call.userName ?? '—'}</td>
+                      <td className="py-2 pl-4 text-slate-700">{call.userName ?? '—'}</td>
+                      <td className="py-2 pl-4 text-slate-700"><CallDevice call={call} /></td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
           </Card>
         </div>

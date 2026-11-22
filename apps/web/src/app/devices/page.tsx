@@ -8,6 +8,7 @@ import { useAuth } from '@/lib/auth';
 import { ApiError, type Device } from '@/lib/types';
 import { formatDateTime, timeAgo } from '@/lib/format';
 import { Button } from '@/components/ui/Button';
+import { DeviceIdentity } from '@/components/devices/DeviceIdentity';
 import { Card } from '@/components/ui/Card';
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
@@ -82,8 +83,7 @@ export default function DevicesPage() {
                 {devices.data.devices.map((device) => (
                   <tr key={device.id} className="border-b border-slate-50 hover:bg-slate-50">
                     <td className="px-5 py-3">
-                      <p className="font-medium text-slate-900">{device.deviceName ?? device.deviceCode}</p>
-                      <p className="text-xs text-slate-500">{device.deviceCode}</p>
+                      <DeviceIdentity device={device} />
                     </td>
                     <td className="px-3 py-3">
                       <p className="text-slate-900">{device.userName}</p>
@@ -128,8 +128,9 @@ export default function DevicesPage() {
           <ShieldAlert className="mt-0.5 h-6 w-6 shrink-0 text-red-500" />
           <p className="text-sm text-slate-700">
             Revoke <span className="font-medium">{revoking?.deviceName ?? revoking?.deviceCode}</span>?
-            The phone will stop syncing call events immediately. The employee will need to register
-            the device again from the Android app.
+            Device ID: <span className="font-mono">{revoking?.id}</span>. Compare this with the ID shown
+            on the phone before confirming. The phone will no longer be able to upload with this token.
+            The employee will need to register the device again from the Android app.
           </p>
         </div>
         <div className="mt-5 flex justify-end gap-2">

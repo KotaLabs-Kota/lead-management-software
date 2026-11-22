@@ -187,8 +187,8 @@ export async function apiDelete(path: string): Promise<void> {
   await apiFetch<undefined>(path, { method: 'DELETE' });
 }
 
-/** Download a file (CSV export) with authentication. */
-export async function downloadFile(path: string, filename: string): Promise<void> {
+/** Download an authenticated export and report whether more records remain. */
+export async function downloadFile(path: string, filename: string): Promise<{ hasMore: boolean }> {
   const response = await doFetch(path, { method: 'GET' });
   if (!response.ok) throw await parseError(response);
 
@@ -201,6 +201,7 @@ export async function downloadFile(path: string, filename: string): Promise<void
   link.click();
   link.remove();
   window.URL.revokeObjectURL(url);
+  return { hasMore: response.headers.get('X-Export-Has-More') === 'true' };
 }
 
 /** Build a query string from a record, skipping empty values. */

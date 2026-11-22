@@ -75,7 +75,7 @@ Accepts a user JWT **or** a device token.
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | POST | `/` | user or device | Single event or `{events: [...]}` batch (max 500). Per-item results: `created` / `duplicate` / error |
-| GET | `/` | user | List (employees: own calls). Query: `page, pageSize, phone, direction, source, userId, leadId, unmatched, from, to` |
+| GET | `/` | user | List (employees: own calls, or all calls on a lead they can access when `leadId` is supplied). Query: `page, pageSize, phone, direction, source, userId, deviceId, leadId, unmatched, from, to` |
 
 Event fields (camelCase; snake_case aliases also accepted):
 `eventId` (UUID, idempotency key), `phoneNumber`, `direction`
@@ -86,8 +86,9 @@ with offset), `durationSeconds`, `simSlot` (1|2), `notes`, `leadId?`,
 
 Rules:
 - Duplicate `eventId` → returns the existing row, never a second row.
-- A call **never** creates a lead. With `CALL_EVENT_AUTO_LINK_LEAD=true` it
-  links to the most recent open lead with the same phone number.
+- With `CALL_EVENT_AUTO_LINK_LEAD=true`, calls link to the most recent open lead with the same phone number.
+- `CALL_EVENT_AUTO_CREATE_LEAD` defaults to `false`. When explicitly enabled, authenticated device-originated incoming, outgoing and missed SIM calls create an assigned lead if no open lead matches. Previous visible closed leads produce a “Returning contact” source detail. Manual and WhatsApp calls never auto-create leads. Outgoing calls can include personal numbers, so enrollment requires explicit informed consent. Do not enable until Android sync and real-device testing are complete.
+- Lead details include up to 25 earlier matching leads visible to the requesting user (`previousLeads`).
 - Unavailable fields stay `null` — the server never invents call data.
 
 ### Follow-ups — `/api/v1/followups`
@@ -101,7 +102,10 @@ Rules:
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/summary` | user | Dashboard payload: totals, by-status, by-source (with conversion rate), per-employee performance. Query: `date (YYYY-MM-DD), userId (admin)` |
-| GET | `/leads.csv` | user | CSV export (Excel-ready, UTF-8 BOM). Query: `status, source, assignedUserId, search, from, to, limit` |
+| GET | `/leads.csv` | admin | CSV export (UTF-8 BOM, formula-protected). Query: `status, source, assignedUserId, search, from, to, limit, offset` (default limit 5,000; max 10,000) |
+| GET | `/leads.pdf` | admin | PDF lead export with the same filters; max 500 per request, default 500. `X-Export-Has-More` indicates another page. |
+
+Exports are bounded and offset-paginated rather than snapshots: new or changed leads during a multi-page export can change which rows appear. Both formats contain customer data and should be stored securely.
 
 ## Error codes
 
@@ -120,3 +124,9 @@ Rules:
 
 - Global: 600 requests / 15 min per IP (configurable).
 - Auth endpoints: 20 attempts / 15 min per IP (successful requests excluded).
+
+### Android test sync gate and self-revocation
+
+- `GET /api/v1/call-sync/capability` requires a user JWT and reports `{ enabled: boolean }`. The test app refuses enrollment when this is false or the endpoint is missing.
+- `POST /api/v1/call-sync/events` accepts only a device token and the existing event/batch format; it returns 503 when `CALL_EVENT_AUTO_CREATE_LEAD` is false. This does not disable the older call-events API.
+- `POST /api/v1/devices/self/revoke` requires a device token and revokes that token. If offline, an administrator must revoke the device instead.

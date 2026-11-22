@@ -1,0 +1,63 @@
+name: Android call feasibility build
+
+on:
+  workflow_dispatch:
+    inputs:
+      sync_origin:
+        description: 'HTTPS origin for isolated testing (optional)'
+        required: false
+        type: string
+  push:
+    paths:
+      - 'apps/android/**'
+      - '.github/workflows/android-call-probe.yml'
+  pull_request:
+    paths:
+      - 'apps/android/**'
+      - '.github/workflows/android-call-probe.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Check Android SDK
+        run: |
+          test -n "$ANDROID_HOME"
+          test -f "$ANDROID_HOME/platforms/android-35/android.jar"
+      - name: Build debug APK
+        working-directory: apps/android
+        env:
+          CRM_SYNC_ORIGIN: ${{ inputs.sync_origin || vars.CRM_SYNC_ORIGIN }}
+        run: |
+          set +e
+          ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug :syncapp:testDebugUnitTest :syncapp:assembleDebug > gradle-build.log 2>&1
+          status=$?
+          tail -120 gradle-build.log
+          if [ "$status" -ne 0 ]; then
+            details=$(grep -E '(^e: |[Ee]rror|FAILURE|What went wrong|^> |[.]kt:)' gradle-build.log | tail -25 | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error::$details"
+          fi
+          exit "$status"
+      - name: Upload test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: CRM-call-feasibility-debug
+          path: apps/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload experimental sync APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: CRM-call-sync-test-debug
+          path: apps/android/syncapp/build/outputs/apk/debug/syncapp-debug.apk
+          if-no-files-found: error
+          retention-days: 7

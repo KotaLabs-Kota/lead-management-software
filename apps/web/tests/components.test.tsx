@@ -1,6 +1,8 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { SourceBadge, StatusBadge } from '@/components/ui/Badge';
+import { DeviceIdentity } from '@/components/devices/DeviceIdentity';
+import { CallDevice } from '@/components/devices/CallDevice';
 import { StatCard } from '@/components/ui/Card';
 import { Pagination } from '@/components/ui/Pagination';
 import { formatDuration, formatPhone, timeAgo } from '@/lib/format';
@@ -63,5 +65,25 @@ describe('format helpers', () => {
     expect(timeAgo(new Date(Date.now() - 30_000).toISOString())).toBe('just now');
     expect(timeAgo(new Date(Date.now() - 5 * 60_000).toISOString())).toBe('5m ago');
     expect(timeAgo(new Date(Date.now() - 3 * 3_600_000).toISOString())).toBe('3h ago');
+  });
+});
+
+
+describe('DeviceIdentity', () => {
+  it('distinguishes the phone-visible device ID from its registration code', () => {
+    render(<DeviceIdentity device={{ id: 'device-id-123', deviceCode: 'registration-code-456', deviceName: 'Test phone' }} />);
+    expect(screen.getByText('Device ID: device-id-123')).toBeInTheDocument();
+    expect(screen.getByText('Registration code: registration-code-456')).toBeInTheDocument();
+  });
+});
+
+
+describe('CallDevice', () => {
+  it('shows model and distinct registration ID, without guessing missing device details', () => {
+    const { rerender } = render(<CallDevice call={{ deviceId: 'device-123', deviceName: 'Android V2437' }} />);
+    expect(screen.getByText('Android V2437')).toBeInTheDocument();
+    expect(screen.getByText('ID: device-123')).toBeInTheDocument();
+    rerender(<CallDevice call={{ deviceId: null, deviceName: null }} />);
+    expect(screen.getByText('—')).toBeInTheDocument();
   });
 });

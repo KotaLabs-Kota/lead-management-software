@@ -156,9 +156,7 @@ POST /api/v1/devices/register            → register an Android phone (token sh
 - **Duplicate-lead guard:** an open lead for the same phone blocks a new one
   (`409 DUPLICATE_LEAD`). Closed leads (CONVERTED/LOST) don't block a fresh
   enquiry.
-- **Call events never create leads.** With `CALL_EVENT_AUTO_LINK_LEAD=true`
-  they link to the most recent open lead with the same number. Unavailable
-  fields stay `null` — the server never invents call data.
+- **Call events:** With `CALL_EVENT_AUTO_LINK_LEAD=true`, they link to an open lead with the same number. Optional device call lead creation is controlled by `CALL_EVENT_AUTO_CREATE_LEAD` (default `false`); enable only after Android sync and real-device testing. Unavailable fields stay `null` — the server never invents call data.
 - **Idempotency:** `call_events.event_id` (client UUID) is unique, so Android
   sync retries never duplicate a call. Social leads are deduplicated by
   `(source, platform_lead_id)`.
